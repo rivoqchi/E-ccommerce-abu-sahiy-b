@@ -72,7 +72,7 @@ export class TelegramGatewayService {
       phone_number: phoneE164,
       code_length: 6,
       ttl: ttlSeconds,
-      payload: 'uytexnika_login',
+      payload: 'sami_login',
     });
 
     return { requestId: result.request_id };

@@ -10,6 +10,14 @@ import { CreateSellerDto } from './dto/create-seller.dto';
 import { UpdateSellerDto } from './dto/update-seller.dto';
 import { SellerStatus } from '../../common/enums/seller-status.enum';
 
+function normalizeTelegramUsername(
+  value?: string | null,
+): string | undefined {
+  if (!value) return undefined;
+  const cleaned = value.trim().replace(/^@+/, '').toLowerCase();
+  return cleaned || undefined;
+}
+
 @Injectable()
 export class SellersService {
   constructor(
@@ -22,13 +30,15 @@ export class SellersService {
 
     const seller = await this.sellerModel.create({
       ...dto,
+      telegramUsername: normalizeTelegramUsername(dto.telegramUsername),
       status: dto.status ?? SellerStatus.Active,
     });
     return seller.toObject();
   }
 
-  async findAll() {
-    return this.sellerModel.find().sort({ createdAt: -1 }).lean().exec();
+  async findAll(activeOnly = false) {
+    const filter = activeOnly ? { status: SellerStatus.Active } : {};
+    return this.sellerModel.find(filter).sort({ createdAt: -1 }).lean().exec();
   }
 
   async update(id: string, dto: UpdateSellerDto) {
@@ -39,8 +49,17 @@ export class SellersService {
       if (conflict) throw new ConflictException('Seller phone already exists');
     }
 
+    const payload: UpdateSellerDto & { telegramUsername?: string } = {
+      ...dto,
+    };
+    if (dto.telegramUsername !== undefined) {
+      payload.telegramUsername = normalizeTelegramUsername(
+        dto.telegramUsername,
+      );
+    }
+
     const seller = await this.sellerModel
-      .findByIdAndUpdate(id, { $set: dto }, { new: true })
+      .findByIdAndUpdate(id, { $set: payload }, { new: true })
       .lean()
       .exec();
     if (!seller) throw new NotFoundException('Seller not found');

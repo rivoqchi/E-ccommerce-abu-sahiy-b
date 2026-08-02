@@ -35,14 +35,20 @@ export class ProductsService {
       await this.brandsService.findById(dto.brandId);
     }
 
-    const slug = dto.slug ? slugify(dto.slug) : slugify(dto.name);
-    const exists = await this.productModel.exists({ slug });
-    if (exists) {
-      throw new ConflictException('Product slug already exists');
+    const code = dto.code.trim().toUpperCase();
+    const codeExists = await this.productModel.exists({ code });
+    if (codeExists) {
+      throw new ConflictException('Bu mahsulot kodi allaqachon mavjud');
     }
+
+    // URL uchun kod asosida slug (kirill nomlardan qochamiz)
+    const slug = await this.buildUniqueSlug(
+      dto.slug ? slugify(dto.slug) : slugify(code) || slugify(dto.name),
+    );
 
     const product = await this.productModel.create({
       ...dto,
+      code,
       description: dto.description?.trim() || dto.name,
       slug,
       price: dto.price,
@@ -131,12 +137,23 @@ export class ProductsService {
   }
 
   async findBySlug(slug: string) {
-    const cacheKey = `products:slug:${slug}`;
+    let decoded = slug;
+    try {
+      for (let i = 0; i < 2; i++) {
+        const next = decodeURIComponent(decoded);
+        if (next === decoded) break;
+        decoded = next;
+      }
+    } catch {
+      decoded = slug;
+    }
+
+    const cacheKey = `products:slug:${decoded}`;
     let product = await this.redis.getJson<Record<string, unknown>>(cacheKey);
 
     if (!product) {
       const found = await this.productModel
-        .findOne({ slug, isActive: true })
+        .findOne({ slug: decoded, isActive: true })
         .populate('categoryId', 'name slug')
         .populate('brandId', 'name slug')
         .lean()
@@ -250,13 +267,25 @@ export class ProductsService {
       await this.brandsService.findById(dto.brandId);
     }
 
-    if (dto.slug) {
-      dto.slug = slugify(dto.slug);
-    } else if (dto.name) {
-      dto.slug = slugify(dto.name);
-    }
-
     const updatePayload: Record<string, unknown> = { ...dto };
+
+    if (dto.slug) {
+      updatePayload.slug = await this.buildUniqueSlug(slugify(dto.slug), id);
+    }
+    // Nom o'zgarsa ham slugni buzib yubormaymiz (Excel upsert uchun muhim)
+
+    if (dto.code !== undefined) {
+      const code = dto.code.trim().toUpperCase();
+      const codeConflict = await this.productModel
+        .findOne({ code, _id: { $ne: id } })
+        .select('_id')
+        .lean()
+        .exec();
+      if (codeConflict) {
+        throw new ConflictException('Bu mahsulot kodi allaqachon mavjud');
+      }
+      updatePayload.code = code;
+    }
     if (dto.categoryId) {
       updatePayload.categoryId = new Types.ObjectId(dto.categoryId);
     }
@@ -318,6 +347,20 @@ export class ProductsService {
 
   async countAll() {
     return this.productModel.countDocuments().exec();
+  }
+
+  private async buildUniqueSlug(base: string, excludeId?: string) {
+    const root = base || `p-${Date.now().toString(36)}`;
+    let candidate = root;
+    let i = 2;
+    for (;;) {
+      const filter: Record<string, unknown> = { slug: candidate };
+      if (excludeId) filter._id = { $ne: excludeId };
+      const exists = await this.productModel.exists(filter);
+      if (!exists) return candidate;
+      candidate = `${root}-${i}`;
+      i += 1;
+    }
   }
 
   private async invalidateCache(productId: string, slug?: string) {

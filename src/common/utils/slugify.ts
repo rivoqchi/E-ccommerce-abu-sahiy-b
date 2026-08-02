@@ -1,11 +1,14 @@
 export function slugify(text: string): string {
-  return text
+  const base = text
     .toString()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9\s-]/g, '')
+    // Lotin + kirill + raqamlar
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
     .replace(/[\s_-]+/g, '-')
     .replace(/^-+|-+$/g, '');
+
+  return base || `item-${Date.now().toString(36)}`;
 }

@@ -28,6 +28,11 @@ export class CreateProductDto {
   @MinLength(2)
   name!: string;
 
+  /** Mahsulot kodi (SKU) */
+  @IsString()
+  @MinLength(1)
+  code!: string;
+
   @IsOptional()
   @IsString()
   slug?: string;

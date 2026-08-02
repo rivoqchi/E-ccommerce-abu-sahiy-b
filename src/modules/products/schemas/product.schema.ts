@@ -20,6 +20,10 @@ export class Product {
   @Prop({ required: true, trim: true })
   name!: string;
 
+  /** Ichki mahsulot kodi (SKU) — unique */
+  @Prop({ required: true, unique: true, trim: true, uppercase: true })
+  code!: string;
+
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   slug!: string;
 
@@ -75,4 +79,9 @@ export const ProductSchema = SchemaFactory.createForClass(Product);
 ProductSchema.index({ categoryId: 1, status: 1 });
 ProductSchema.index({ brandId: 1, status: 1 });
 ProductSchema.index({ status: 1, isActive: 1, createdAt: -1 });
-ProductSchema.index({ name: 'text', description: 'text', tags: 'text' });
+ProductSchema.index({
+  name: 'text',
+  description: 'text',
+  tags: 'text',
+  code: 'text',
+});

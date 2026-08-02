@@ -10,13 +10,19 @@ import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false,
+  });
   const config = app.get(ConfigService);
 
   const prefix = config.get<string>('apiPrefix', 'api/v1');
   app.setGlobalPrefix(prefix, {
     exclude: [{ path: 'health', method: RequestMethod.GET }],
   });
+
+  // Base64 image uploads exceed Express default 100kb JSON limit
+  app.useBodyParser('json', { limit: '12mb' });
+  app.useBodyParser('urlencoded', { limit: '12mb', extended: true });
 
   app.useStaticAssets(join(process.cwd(), 'uploads'), {
     prefix: '/uploads/',

@@ -13,6 +13,7 @@ import { CategoriesModule } from './modules/categories/categories.module';
 import { ProductsModule } from './modules/products/products.module';
 import { BrandsModule } from './modules/brands/brands.module';
 import { SellersModule } from './modules/sellers/sellers.module';
+import { StoriesModule } from './modules/stories/stories.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { UploadsModule } from './modules/uploads/uploads.module';
 import { CartModule } from './modules/cart/cart.module';
@@ -59,6 +60,7 @@ import { HealthModule } from './health/health.module';
     BrandsModule,
     ProductsModule,
     SellersModule,
+    StoriesModule,
     AdminModule,
     UploadsModule,
     CartModule,

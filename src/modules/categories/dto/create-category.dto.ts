@@ -21,6 +21,10 @@ export class CreateCategoryDto {
   description?: string;
 
   @IsOptional()
+  @IsString()
+  image?: string;
+
+  @IsOptional()
   @IsMongoId()
   parentId?: string;
 

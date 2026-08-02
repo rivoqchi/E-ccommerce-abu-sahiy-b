@@ -14,6 +14,10 @@ export class Category {
   @Prop()
   description?: string;
 
+  /** Storefront circular category thumbnail */
+  @Prop()
+  image?: string;
+
   @Prop({ type: Types.ObjectId, ref: 'Category', default: null })
   parentId?: Types.ObjectId | null;
 

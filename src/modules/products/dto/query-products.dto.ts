@@ -7,12 +7,21 @@ export class QueryProductsDto {
   categoryId?: string;
 
   @IsOptional()
+  @IsMongoId()
+  brandId?: string;
+
+  @IsOptional()
   @IsString()
   q?: string;
 
   @IsOptional()
   @IsString()
   cursor?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @Min(1)
+  page?: number;
 
   @IsOptional()
   @Type(() => Number)

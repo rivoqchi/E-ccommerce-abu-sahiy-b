@@ -52,13 +52,40 @@ export class UsersService {
     return this.userModel.findOne({ telegramId }).exec();
   }
 
-  async findOrCreateByPhone(phone: string): Promise<UserDocument> {
-    const existing = await this.findByPhone(phone);
-    if (existing) return existing;
+  async findOrCreateByPhone(
+    phone: string,
+    profile?: {
+      fullName?: string;
+      firstName?: string;
+      lastName?: string;
+    },
+  ): Promise<UserDocument> {
+    const normalized = normalizePhone(phone);
+    const existing = await this.findByPhone(normalized);
+    if (existing) {
+      let dirty = false;
+      if (profile?.fullName && existing.fullName !== profile.fullName) {
+        existing.fullName = profile.fullName;
+        dirty = true;
+      }
+      if (profile?.firstName && existing.firstName !== profile.firstName) {
+        existing.firstName = profile.firstName;
+        dirty = true;
+      }
+      if (profile?.lastName && existing.lastName !== profile.lastName) {
+        existing.lastName = profile.lastName;
+        dirty = true;
+      }
+      if (dirty) await existing.save();
+      return existing;
+    }
 
     return this.userModel.create({
-      phone,
-      fullName: phone,
+      phone: normalized,
+      email: `guest.${normalized.replace(/\D/g, '')}@checkout.local`,
+      fullName: profile?.fullName?.trim() || normalized,
+      firstName: profile?.firstName?.trim(),
+      lastName: profile?.lastName?.trim(),
       role: Role.Customer,
     });
   }

@@ -15,11 +15,14 @@ import { RedisService } from '../redis/redis.service';
 import { ProductStatus } from '../../common/enums/product-status.enum';
 import { CategoriesService } from '../categories/categories.service';
 import { BrandsService } from '../brands/brands.service';
+import { Order } from '../orders/schemas/order.schema';
+import { OrderStatus } from '../../common/enums/order-status.enum';
 
 @Injectable()
 export class ProductsService {
   constructor(
     @InjectModel(Product.name) private readonly productModel: Model<Product>,
+    @InjectModel(Order.name) private readonly orderModel: Model<Order>,
     private readonly redis: RedisService,
     private readonly configService: ConfigService,
     private readonly categoriesService: CategoriesService,
@@ -56,10 +59,15 @@ export class ProductsService {
 
   async findAll(query: QueryProductsDto) {
     const limit = query.limit ?? 20;
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const useOffset = Boolean(query.page) && !query.cursor;
     const cacheKey = `products:list:${JSON.stringify(query)}`;
     const cached = await this.redis.getJson<{
       items: unknown[];
       nextCursor: string | null;
+      total: number;
+      page: number;
+      totalPages: number;
     }>(cacheKey);
     if (cached) return cached;
 
@@ -72,27 +80,44 @@ export class ProductsService {
       filter.categoryId = new Types.ObjectId(query.categoryId);
     }
 
+    if (query.brandId) {
+      filter.brandId = new Types.ObjectId(query.brandId);
+    }
+
     if (query.q) {
       filter.$text = { $search: query.q };
     }
+
+    const total = await this.productModel.countDocuments(filter).exec();
 
     if (query.cursor) {
       filter._id = { $lt: new Types.ObjectId(query.cursor) };
     }
 
+    const skip = useOffset ? (page - 1) * limit : 0;
+
     const items = await this.productModel
       .find(filter)
+      .populate('categoryId', 'name slug')
+      .populate('brandId', 'name slug')
       .sort({ _id: -1 })
+      .skip(skip)
       .limit(limit)
       .lean()
       .exec();
 
     const nextCursor =
-      items.length === limit
+      !useOffset && items.length === limit
         ? (items[items.length - 1] as { _id: Types.ObjectId })._id.toString()
         : null;
 
-    const result = { items, nextCursor };
+    const result = {
+      items,
+      nextCursor,
+      total,
+      page: useOffset ? page : 1,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
     const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
     await this.redis.setJson(cacheKey, result, ttl);
     return result;
@@ -104,21 +129,106 @@ export class ProductsService {
 
   async findBySlug(slug: string) {
     const cacheKey = `products:slug:${slug}`;
-    const cached = await this.redis.getJson<unknown>(cacheKey);
-    if (cached) return cached;
-
-    const product = await this.productModel
-      .findOne({ slug, isActive: true })
-      .lean()
-      .exec();
+    let product = await this.redis.getJson<Record<string, unknown>>(cacheKey);
 
     if (!product) {
-      throw new NotFoundException('Product not found');
+      const found = await this.productModel
+        .findOne({ slug, isActive: true })
+        .populate('categoryId', 'name slug')
+        .populate('brandId', 'name slug')
+        .lean()
+        .exec();
+
+      if (!found) {
+        throw new NotFoundException('Product not found');
+      }
+
+      product = found as unknown as Record<string, unknown>;
+      const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
+      await this.redis.setJson(cacheKey, product, ttl);
     }
 
-    const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
-    await this.redis.setJson(cacheKey, product, ttl);
-    return product;
+    const productId = String(
+      (product as { _id?: Types.ObjectId | string })._id ?? '',
+    );
+    const purchaseStats = await this.getBuyerStats(productId);
+
+    return {
+      ...product,
+      buyerCount: purchaseStats.buyerCount,
+      recentBuyers: purchaseStats.recentBuyers,
+    };
+  }
+
+  private async getBuyerStats(productId: string) {
+    if (!Types.ObjectId.isValid(productId)) {
+      return {
+        buyerCount: 0,
+        recentBuyers: [] as Array<{ fullName: string; avatarUrl?: string }>,
+      };
+    }
+
+    const paidStatuses = [
+      OrderStatus.Paid,
+      OrderStatus.Shipped,
+      OrderStatus.Delivered,
+    ];
+    const productObjectId = new Types.ObjectId(productId);
+
+    const [countRow, recentBuyers] = await Promise.all([
+      this.orderModel
+        .aggregate<{ buyerCount: number }>([
+          {
+            $match: {
+              status: { $in: paidStatuses },
+              'items.productId': productObjectId,
+            },
+          },
+          { $group: { _id: '$userId' } },
+          { $count: 'buyerCount' },
+        ])
+        .exec(),
+      this.orderModel
+        .aggregate<{ fullName: string; avatarUrl?: string }>([
+          {
+            $match: {
+              status: { $in: paidStatuses },
+              'items.productId': productObjectId,
+            },
+          },
+          { $sort: { createdAt: -1 } },
+          {
+            $group: {
+              _id: '$userId',
+              lastAt: { $first: '$createdAt' },
+            },
+          },
+          { $sort: { lastAt: -1 } },
+          { $limit: 3 },
+          {
+            $lookup: {
+              from: 'users',
+              localField: '_id',
+              foreignField: '_id',
+              as: 'user',
+            },
+          },
+          { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+          {
+            $project: {
+              _id: 0,
+              fullName: { $ifNull: ['$user.fullName', 'Xaridor'] },
+              avatarUrl: '$user.avatarUrl',
+            },
+          },
+        ])
+        .exec(),
+    ]);
+
+    return {
+      buyerCount: countRow[0]?.buyerCount ?? 0,
+      recentBuyers,
+    };
   }
 
   async findById(id: string) {

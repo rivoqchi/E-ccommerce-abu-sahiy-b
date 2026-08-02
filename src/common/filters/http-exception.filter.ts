@@ -27,6 +27,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
         : ((exceptionResponse as { message?: string | string[] } | null)
             ?.message ?? 'Internal server error');
 
+    if (!(exception instanceof HttpException)) {
+      // eslint-disable-next-line no-console
+      console.error('[Unhandled]', exception);
+    }
+
     response.status(status).json({
       success: false,
       statusCode: status,

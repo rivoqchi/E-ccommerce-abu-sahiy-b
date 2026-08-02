@@ -10,18 +10,21 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build && npm prune --omit=dev
 
-FROM base AS production
-ENV NODE_ENV=production
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/node_modules ./node_modules
-COPY package.json ./
-EXPOSE 3000
-CMD ["node", "dist/main.js"]
-
+# Local docker-compose: target: development
 FROM base AS development
 ENV NODE_ENV=development
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-EXPOSE 3000
+EXPOSE 4000
 CMD ["npm", "run", "start:dev"]
+
+# Default stage (Render / Railway / production) — oxirgi stage ishlatiladi
+FROM base AS production
+ENV NODE_ENV=production
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/node_modules ./node_modules
+COPY package.json ./
+RUN mkdir -p uploads/avatars
+EXPOSE 4000
+CMD ["node", "dist/main.js"]

@@ -2,7 +2,8 @@ node_modules
 dist
 coverage
 .env
-uploads
+# Faqat yuklangan fayllar (Nest moduli src/modules/uploads emas)
+/uploads
 *.log
 .DS_Store
 .idea

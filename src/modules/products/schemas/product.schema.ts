@@ -26,8 +26,13 @@ export class Product {
   @Prop({ default: '' })
   description!: string;
 
+  /** Oddiy (retail) narx — USD */
   @Prop({ required: true, min: 0 })
   price!: number;
+
+  /** Optom (wholesale) narx — USD */
+  @Prop({ min: 0, default: 0 })
+  wholesalePrice!: number;
 
   @Prop({ min: 0 })
   compareAtPrice?: number;

@@ -13,6 +13,8 @@ import { User, UserDocument } from './schemas/user.schema';
 import { Role } from '../../common/enums/role.enum';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { AddressDto } from './dto/address.dto';
+import { PriceTier } from '../../common/enums/price-tier.enum';
+import { AdminUpdateUserDto } from './dto/admin-update-user.dto';
 
 @Injectable()
 export class UsersService {
@@ -37,6 +39,7 @@ export class UsersService {
       passwordHash: data.passwordHash,
       fullName: data.fullName,
       role: data.role ?? Role.Customer,
+      priceTier: PriceTier.Retail,
     });
   }
 
@@ -87,6 +90,7 @@ export class UsersService {
       firstName: profile?.firstName?.trim(),
       lastName: profile?.lastName?.trim(),
       role: Role.Customer,
+      priceTier: PriceTier.Retail,
     });
   }
 
@@ -133,6 +137,7 @@ export class UsersService {
       username: data.username,
       avatarUrl: data.avatarUrl,
       role: Role.Customer,
+      priceTier: PriceTier.Retail,
     });
   }
 
@@ -297,6 +302,7 @@ export class UsersService {
       fullName: user.fullName,
       avatarUrl: user.avatarUrl ?? null,
       role: user.role,
+      priceTier: user.priceTier ?? PriceTier.Retail,
       addresses: user.addresses,
       isActive: user.isActive,
       createdAt: (user as UserDocument & { createdAt?: Date }).createdAt,
@@ -333,15 +339,13 @@ export class UsersService {
       fullName: u.fullName,
       avatarUrl: u.avatarUrl ?? null,
       role: u.role,
+      priceTier: (u as { priceTier?: PriceTier }).priceTier ?? PriceTier.Retail,
       isActive: u.isActive,
       createdAt: (u as { createdAt?: Date }).createdAt,
     }));
   }
 
-  async adminUpdateUser(
-    id: string,
-    dto: { isActive?: boolean; role?: Role },
-  ) {
+  async adminUpdateUser(id: string, dto: AdminUpdateUserDto) {
     const user = await this.userModel
       .findByIdAndUpdate(id, { $set: dto }, { new: true })
       .exec();

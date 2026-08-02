@@ -1,6 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 import { Role } from '../../../common/enums/role.enum';
+import { PriceTier } from '../../../common/enums/price-tier.enum';
 
 export type UserDocument = HydratedDocument<User>;
 
@@ -68,6 +69,10 @@ export class User {
 
   @Prop({ type: String, enum: Role, default: Role.Customer })
   role!: Role;
+
+  /** Yangi foydalanuvchi — oddiy narx; admin optomga o'tkazadi */
+  @Prop({ type: String, enum: PriceTier, default: PriceTier.Retail })
+  priceTier!: PriceTier;
 
   @Prop({ type: [AddressSchema], default: [] })
   addresses!: Address[];

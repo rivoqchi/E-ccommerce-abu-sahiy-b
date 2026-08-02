@@ -45,6 +45,9 @@ export class ProductsService {
       ...dto,
       description: dto.description?.trim() || dto.name,
       slug,
+      price: dto.price,
+      wholesalePrice:
+        dto.wholesalePrice !== undefined ? dto.wholesalePrice : dto.price,
       categoryId: new Types.ObjectId(dto.categoryId),
       brandId: dto.brandId ? new Types.ObjectId(dto.brandId) : undefined,
       specs: dto.specs ?? [],

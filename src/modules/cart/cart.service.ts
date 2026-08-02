@@ -10,12 +10,16 @@ import { ProductsService } from '../products/products.service';
 import { AddCartItemDto } from './dto/add-cart-item.dto';
 import { RedisService } from '../redis/redis.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { UsersService } from '../users/users.service';
+import { PriceTier } from '../../common/enums/price-tier.enum';
+import { resolveUnitPrice } from '../../common/utils/pricing';
 
 @Injectable()
 export class CartService {
   constructor(
     @InjectModel(Cart.name) private readonly cartModel: Model<Cart>,
     private readonly productsService: ProductsService,
+    private readonly usersService: UsersService,
     private readonly redis: RedisService,
     private readonly realtime: RealtimeService,
   ) {}
@@ -25,11 +29,24 @@ export class CartService {
     return this.toResponse(cart);
   }
 
+  private async tierFor(userId?: string): Promise<PriceTier> {
+    if (!userId) return PriceTier.Retail;
+    try {
+      const user = await this.usersService.findById(userId);
+      return user.priceTier ?? PriceTier.Retail;
+    } catch {
+      return PriceTier.Retail;
+    }
+  }
+
   async addItem(dto: AddCartItemDto, userId?: string, guestId?: string) {
     const product = await this.productsService.findById(dto.productId);
     if (product.stock < dto.quantity) {
       throw new BadRequestException('Insufficient stock');
     }
+
+    const tier = await this.tierFor(userId);
+    const unitPrice = resolveUnitPrice(product, tier);
 
     const cart = await this.findOrCreate(userId, guestId);
     const existing = cart.items.find(
@@ -38,6 +55,7 @@ export class CartService {
 
     if (existing) {
       existing.quantity += dto.quantity;
+      existing.unitPrice = unitPrice;
       if (existing.quantity > product.stock) {
         throw new BadRequestException('Insufficient stock');
       }
@@ -45,7 +63,7 @@ export class CartService {
       cart.items.push({
         productId: new Types.ObjectId(dto.productId),
         quantity: dto.quantity,
-        unitPrice: product.price,
+        unitPrice,
         name: product.name,
         slug: product.slug,
         image: product.images?.[0],
@@ -78,8 +96,9 @@ export class CartService {
       if (product.stock < quantity) {
         throw new BadRequestException('Insufficient stock');
       }
+      const tier = await this.tierFor(userId);
       item.quantity = quantity;
-      item.unitPrice = product.price;
+      item.unitPrice = resolveUnitPrice(product, tier);
     }
 
     await cart.save();

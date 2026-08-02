@@ -1,4 +1,5 @@
 import {
+  ArrayMinSize,
   IsArray,
   IsEnum,
   IsMongoId,
@@ -35,9 +36,16 @@ export class CreateProductDto {
   @IsString()
   description?: string;
 
+  /** Oddiy narx (USD) */
   @IsNumber()
   @Min(0)
   price!: number;
+
+  /** Optom narx (USD). Berilmasa oddiy narx olinadi. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  wholesalePrice?: number;
 
   @IsOptional()
   @IsNumber()
@@ -55,10 +63,10 @@ export class CreateProductDto {
   @IsMongoId()
   brandId?: string;
 
-  @IsOptional()
   @IsArray()
+  @ArrayMinSize(1, { message: 'Kamida 1 ta rasm yuklash majburiy' })
   @IsString({ each: true })
-  images?: string[];
+  images!: string[];
 
   @IsOptional()
   @IsArray()

@@ -14,6 +14,8 @@ import { UsersService } from '../users/users.service';
 import { ProductsService } from '../products/products.service';
 import { OrderStatus } from '../../common/enums/order-status.enum';
 import { RealtimeService } from '../realtime/realtime.service';
+import { PriceTier } from '../../common/enums/price-tier.enum';
+import { resolveUnitPrice } from '../../common/utils/pricing';
 
 const STATUS_FLOW: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.Pending]: [OrderStatus.Paid, OrderStatus.Cancelled],
@@ -103,6 +105,8 @@ export class OrdersService {
       lastName,
     });
 
+    const priceTier = user.priceTier ?? PriceTier.Retail;
+
     const lines: Array<{
       productId: Types.ObjectId;
       name: string;
@@ -126,7 +130,7 @@ export class OrdersService {
         name: product.name,
         slug: product.slug,
         quantity: line.quantity,
-        unitPrice: product.price,
+        unitPrice: resolveUnitPrice(product, priceTier),
       });
     }
 

@@ -1,0 +1,144 @@
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { Cart, CartDocument } from './schemas/cart.schema';
+import { ProductsService } from '../products/products.service';
+import { AddCartItemDto } from './dto/add-cart-item.dto';
+import { RedisService } from '../redis/redis.service';
+import { RealtimeService } from '../realtime/realtime.service';
+
+@Injectable()
+export class CartService {
+  constructor(
+    @InjectModel(Cart.name) private readonly cartModel: Model<Cart>,
+    private readonly productsService: ProductsService,
+    private readonly redis: RedisService,
+    private readonly realtime: RealtimeService,
+  ) {}
+
+  async getCart(userId?: string, guestId?: string) {
+    const cart = await this.findOrCreate(userId, guestId);
+    return this.toResponse(cart);
+  }
+
+  async addItem(dto: AddCartItemDto, userId?: string, guestId?: string) {
+    const product = await this.productsService.findById(dto.productId);
+    if (product.stock < dto.quantity) {
+      throw new BadRequestException('Insufficient stock');
+    }
+
+    const cart = await this.findOrCreate(userId, guestId);
+    const existing = cart.items.find(
+      (item) => item.productId.toString() === dto.productId,
+    );
+
+    if (existing) {
+      existing.quantity += dto.quantity;
+      if (existing.quantity > product.stock) {
+        throw new BadRequestException('Insufficient stock');
+      }
+    } else {
+      cart.items.push({
+        productId: new Types.ObjectId(dto.productId),
+        quantity: dto.quantity,
+        unitPrice: product.price,
+        name: product.name,
+        slug: product.slug,
+        image: product.images?.[0],
+      });
+    }
+
+    await cart.save();
+    await this.cacheAndEmit(cart, userId, guestId);
+    return this.toResponse(cart);
+  }
+
+  async updateItem(
+    productId: string,
+    quantity: number,
+    userId?: string,
+    guestId?: string,
+  ) {
+    const cart = await this.findOrCreate(userId, guestId);
+    const item = cart.items.find((i) => i.productId.toString() === productId);
+    if (!item) {
+      throw new NotFoundException('Cart item not found');
+    }
+
+    if (quantity === 0) {
+      cart.items = cart.items.filter(
+        (i) => i.productId.toString() !== productId,
+      );
+    } else {
+      const product = await this.productsService.findById(productId);
+      if (product.stock < quantity) {
+        throw new BadRequestException('Insufficient stock');
+      }
+      item.quantity = quantity;
+      item.unitPrice = product.price;
+    }
+
+    await cart.save();
+    await this.cacheAndEmit(cart, userId, guestId);
+    return this.toResponse(cart);
+  }
+
+  async clear(userId?: string, guestId?: string) {
+    const cart = await this.findOrCreate(userId, guestId);
+    cart.items = [];
+    await cart.save();
+    await this.cacheAndEmit(cart, userId, guestId);
+    return this.toResponse(cart);
+  }
+
+  async getCartDocument(userId?: string, guestId?: string) {
+    return this.findOrCreate(userId, guestId);
+  }
+
+  private async findOrCreate(userId?: string, guestId?: string) {
+    if (!userId && !guestId) {
+      throw new BadRequestException('userId or guestId is required');
+    }
+
+    const filter = userId
+      ? { userId: new Types.ObjectId(userId) }
+      : { guestId };
+
+    let cart = await this.cartModel.findOne(filter).exec();
+    if (!cart) {
+      cart = await this.cartModel.create(filter);
+    }
+    return cart;
+  }
+
+  private toResponse(cart: CartDocument) {
+    const subtotal = cart.items.reduce(
+      (sum, item) => sum + item.unitPrice * item.quantity,
+      0,
+    );
+
+    return {
+      id: cart._id.toString(),
+      userId: cart.userId?.toString(),
+      guestId: cart.guestId,
+      items: cart.items,
+      subtotal,
+      itemCount: cart.items.reduce((sum, item) => sum + item.quantity, 0),
+    };
+  }
+
+  private async cacheAndEmit(
+    cart: CartDocument,
+    userId?: string,
+    guestId?: string,
+  ) {
+    const payload = this.toResponse(cart);
+    const key = userId ? `cart:user:${userId}` : `cart:guest:${guestId}`;
+    await this.redis.setJson(key, payload, 3600);
+    this.realtime.emitCartUpdated(userId ?? guestId ?? 'guest', payload);
+  }
+}

@@ -6,6 +6,7 @@ import { RefreshDto } from './dto/refresh.dto';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { TelegramAuthDto } from './dto/telegram-auth.dto';
+import { TelegramContactDto } from './dto/telegram-contact.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import {
@@ -45,6 +46,15 @@ export class AuthController {
   @Post('telegram')
   telegramAuth(@Body() dto: TelegramAuthDto) {
     return this.authService.loginWithTelegram(dto.initData);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('telegram/contact')
+  linkTelegramContact(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: TelegramContactDto,
+  ) {
+    return this.authService.linkTelegramContact(user.userId, dto.contactData);
   }
 
   @Public()

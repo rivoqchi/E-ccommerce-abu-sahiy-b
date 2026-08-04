@@ -167,10 +167,14 @@ export class AuthService {
   async loginWithTelegram(initData: string) {
     const { user: tgUser } = this.initDataService.validate(initData);
 
-    const firstName = tgUser.first_name?.trim() || undefined;
-    const lastName = tgUser.last_name?.trim() || undefined;
+    // Exact Telegram profile fields — always take latest from Mini App
+    const firstName = (tgUser.first_name ?? '').trim() || undefined;
+    const lastName = (tgUser.last_name ?? '').trim() || undefined;
+    const username = (tgUser.username ?? '').trim().replace(/^@/, '') || undefined;
+    const avatarUrl = (tgUser.photo_url ?? '').trim() || undefined;
     const fullName =
       [firstName, lastName].filter(Boolean).join(' ').trim() ||
+      username ||
       `User ${tgUser.id}`;
 
     let user = await this.usersService.findOrCreateByTelegram({
@@ -178,11 +182,67 @@ export class AuthService {
       fullName,
       firstName,
       lastName,
-      username: tgUser.username,
-      avatarUrl: tgUser.photo_url,
+      username,
+      avatarUrl,
     });
 
     user = await this.usersService.ensureSuperAdmin(user);
+
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is disabled');
+    }
+
+    const tokens = await this.issueTokens(user);
+    await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
+
+    return {
+      user: this.usersService.toPublic(user),
+      ...tokens,
+    };
+  }
+
+  /**
+   * After Mini App auth: attach phone from WebApp.requestContact() signed payload.
+   */
+  async linkTelegramContact(userId: string, contactData: string) {
+    const current = await this.usersService.findById(userId);
+    if (!current.telegramId) {
+      throw new BadRequestException('Account is not linked to Telegram');
+    }
+
+    const { contact } = this.initDataService.validateContact(contactData);
+
+    if (
+      contact.user_id != null &&
+      String(contact.user_id) !== current.telegramId
+    ) {
+      throw new UnauthorizedException('Contact does not belong to this user');
+    }
+
+    let user = await this.usersService.linkPhoneFromTelegram(
+      userId,
+      contact.phone_number,
+      current.telegramId,
+      {
+        firstName: contact.first_name?.trim() || undefined,
+        lastName: contact.last_name?.trim() || undefined,
+      },
+    );
+
+    user = await this.usersService.ensureSuperAdmin(user);
+
+    // Phone may promote to super-admin
+    const superPhone = (
+      this.configService.get<string>('telegram.superAdminPhone') ?? ''
+    ).trim();
+    if (
+      superPhone &&
+      user.phone &&
+      normalizeAuthPhone(user.phone) === normalizeAuthPhone(superPhone)
+    ) {
+      const promoted = await this.usersService.promoteToAdminByPhone(user.phone);
+      if (promoted) user = promoted;
+    }
 
     if (!user.isActive) {
       throw new UnauthorizedException('Account is disabled');

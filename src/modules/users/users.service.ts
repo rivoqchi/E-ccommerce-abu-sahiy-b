@@ -105,26 +105,33 @@ export class UsersService {
     const existing = await this.findByTelegramId(data.telegramId);
     if (existing) {
       let dirty = false;
+
+      // Always mirror latest Telegram profile (name + photo)
+      if (data.firstName !== undefined && existing.firstName !== data.firstName) {
+        existing.firstName = data.firstName || undefined;
+        dirty = true;
+      }
+      if (data.lastName !== undefined && existing.lastName !== data.lastName) {
+        existing.lastName = data.lastName || undefined;
+        dirty = true;
+      }
       if (data.fullName && existing.fullName !== data.fullName) {
         existing.fullName = data.fullName;
         dirty = true;
       }
-      if (data.firstName && existing.firstName !== data.firstName) {
-        existing.firstName = data.firstName;
-        dirty = true;
+      if (data.username !== undefined) {
+        const nextUsername = data.username?.replace(/^@/, '') || undefined;
+        if (existing.username !== nextUsername) {
+          existing.username = nextUsername;
+          dirty = true;
+        }
       }
-      if (data.lastName !== undefined && existing.lastName !== data.lastName) {
-        existing.lastName = data.lastName;
-        dirty = true;
-      }
-      if (data.username && existing.username !== data.username) {
-        existing.username = data.username;
-        dirty = true;
-      }
-      if (data.avatarUrl && !existing.avatarUrl?.includes('/uploads/avatars/')) {
+      // Always place Telegram's current main profile photo when provided
+      if (data.avatarUrl && existing.avatarUrl !== data.avatarUrl) {
         existing.avatarUrl = data.avatarUrl;
         dirty = true;
       }
+
       if (dirty) await existing.save();
       return existing;
     }
@@ -134,7 +141,7 @@ export class UsersService {
       fullName: data.fullName,
       firstName: data.firstName,
       lastName: data.lastName,
-      username: data.username,
+      username: data.username?.replace(/^@/, '') || undefined,
       avatarUrl: data.avatarUrl,
       role: Role.Customer,
       priceTier: PriceTier.Retail,
@@ -164,6 +171,107 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     return user;
+  }
+
+  /**
+   * Attach a Telegram-verified phone to the current Mini App user.
+   * If that phone already belongs to another account without a different
+   * telegramId, merge into the phone account (canonical) and deactivate the duplicate.
+   */
+  async linkPhoneFromTelegram(
+    userId: string,
+    phone: string,
+    telegramId: string,
+    profile?: { firstName?: string; lastName?: string },
+  ): Promise<UserDocument> {
+    const normalized = normalizePhone(phone);
+    if (!normalized) {
+      throw new BadRequestException('Invalid phone number');
+    }
+
+    const current = await this.findById(userId);
+    if (current.phone === normalized) {
+      return current;
+    }
+
+    const byPhone = await this.findByPhone(normalized);
+
+    if (!byPhone) {
+      current.phone = normalized;
+      if (profile?.firstName && !current.firstName) {
+        current.firstName = profile.firstName;
+      }
+      if (profile?.lastName && !current.lastName) {
+        current.lastName = profile.lastName;
+      }
+      if (profile?.firstName || profile?.lastName) {
+        const full = [current.firstName, current.lastName]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+        if (full) current.fullName = full;
+      }
+      await current.save();
+      return current;
+    }
+
+    if (byPhone._id.toString() === userId) {
+      return current;
+    }
+
+    if (byPhone.telegramId && byPhone.telegramId !== telegramId) {
+      throw new ConflictException(
+        'Phone already linked to another Telegram account',
+      );
+    }
+
+    // Merge telegram profile into the existing phone account
+    byPhone.telegramId = telegramId;
+    if (current.username && !byPhone.username) {
+      byPhone.username = current.username;
+    }
+    // Prefer Telegram profile names when phone account is incomplete
+    if (current.firstName) {
+      byPhone.firstName = current.firstName;
+    }
+    if (current.lastName) {
+      byPhone.lastName = current.lastName;
+    }
+    if (profile?.firstName) {
+      byPhone.firstName = profile.firstName;
+    }
+    if (profile?.lastName) {
+      byPhone.lastName = profile.lastName;
+    }
+    // Always keep Telegram main photo when available
+    if (current.avatarUrl) {
+      byPhone.avatarUrl = current.avatarUrl;
+    }
+    if (current.role === Role.Admin && byPhone.role !== Role.Admin) {
+      byPhone.role = Role.Admin;
+    }
+    if (
+      current.priceTier === PriceTier.Wholesale &&
+      byPhone.priceTier !== PriceTier.Wholesale
+    ) {
+      byPhone.priceTier = PriceTier.Wholesale;
+    }
+    const mergedName = [byPhone.firstName, byPhone.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    if (mergedName) byPhone.fullName = mergedName;
+    await byPhone.save();
+
+    // Free unique telegramId on the duplicate Mini App-only user
+    await this.userModel
+      .findByIdAndUpdate(userId, {
+        $unset: { telegramId: 1, refreshTokenHash: 1 },
+        $set: { isActive: false },
+      })
+      .exec();
+
+    return byPhone;
   }
 
   async findById(id: string): Promise<UserDocument> {
@@ -387,9 +495,10 @@ export class UsersService {
 }
 
 function normalizePhone(phone: string): string {
-  const trimmed = phone.trim().replace(/[\s-]/g, '');
+  const trimmed = phone.trim().replace(/[\s\-()]/g, '');
   if (!trimmed) return '';
   if (trimmed.startsWith('+')) return trimmed;
-  if (trimmed.startsWith('998') && trimmed.length >= 12) return `+${trimmed}`;
+  // Telegram contact often sends digits only, e.g. 998901234567
+  if (/^\d{8,15}$/.test(trimmed)) return `+${trimmed}`;
   return trimmed;
 }

@@ -7,20 +7,20 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { mkdir, writeFile } from 'fs/promises';
-import { join } from 'path';
 import { User, UserDocument } from './schemas/user.schema';
 import { Role } from '../../common/enums/role.enum';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { AddressDto } from './dto/address.dto';
 import { PriceTier } from '../../common/enums/price-tier.enum';
 import { AdminUpdateUserDto } from './dto/admin-update-user.dto';
+import { R2StorageService } from '../uploads/r2-storage.service';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<User>,
     private readonly configService: ConfigService,
+    private readonly r2: R2StorageService,
   ) {}
 
   async create(data: {
@@ -341,20 +341,26 @@ export class UsersService {
       throw new BadRequestException('Invalid image data URL');
     }
 
-    const ext = match[1].toLowerCase() === 'jpg' ? 'jpeg' : match[1].toLowerCase();
+    const rawExt = match[1].toLowerCase();
+    const ext = rawExt === 'jpeg' || rawExt === 'jpg' ? 'jpg' : rawExt;
     const buffer = Buffer.from(match[2], 'base64');
     if (buffer.byteLength > 1_800_000) {
       throw new BadRequestException('Image too large (max ~1.5MB)');
     }
 
-    const dir = join(process.cwd(), 'uploads', 'avatars');
-    await mkdir(dir, { recursive: true });
-    const filename = `${userId}.${ext === 'jpeg' ? 'jpg' : ext}`;
-    const filepath = join(dir, filename);
-    await writeFile(filepath, buffer);
-
-    const appUrl = this.configService.getOrThrow<string>('appUrl');
-    const avatarUrl = `${appUrl.replace(/\/$/, '')}/uploads/avatars/${filename}?v=${Date.now()}`;
+    const filename = `${userId}.${ext}`;
+    const contentType =
+      ext === 'png'
+        ? 'image/png'
+        : ext === 'webp'
+          ? 'image/webp'
+          : 'image/jpeg';
+    const storedUrl = await this.r2.putObject({
+      key: `avatars/${filename}`,
+      body: buffer,
+      contentType,
+    });
+    const avatarUrl = `${storedUrl}?v=${Date.now()}`;
 
     const user = await this.userModel
       .findByIdAndUpdate(userId, { $set: { avatarUrl } }, { new: true })

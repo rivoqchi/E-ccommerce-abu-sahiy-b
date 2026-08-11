@@ -58,4 +58,14 @@ export default () => ({
     ),
     superAdminPhone: optionalEnv('SUPER_ADMIN_PHONE'),
   },
+
+  /** Cloudflare R2 (S3-compatible) media storage */
+  r2: {
+    accountId: requireEnv('R2_ACCOUNT_ID'),
+    accessKeyId: requireEnv('R2_ACCESS_KEY_ID'),
+    secretAccessKey: requireEnv('R2_SECRET_ACCESS_KEY'),
+    bucket: requireEnv('R2_BUCKET_NAME'),
+    endpoint: requireEnv('R2_ENDPOINT').replace(/\/$/, ''),
+    publicUrl: requireEnv('R2_PUBLIC_URL').replace(/\/$/, ''),
+  },
 });

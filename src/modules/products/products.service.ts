@@ -127,13 +127,46 @@ export class ProductsService {
       page: useOffset ? page : 1,
       totalPages: Math.max(1, Math.ceil(total / limit)),
     };
-    const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
-    await this.redis.setJson(cacheKey, result, ttl);
+    // Bo'sh ro'yxatni cache qilmaslik — wipe/import oralig'ida sticky empty bo'lmasin
+    if (total > 0 && items.length > 0) {
+      const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
+      await this.redis.setJson(cacheKey, result, ttl);
+    }
     return result;
   }
 
-  async findAllAdmin() {
-    return this.productModel.find().sort({ createdAt: -1 }).lean().exec();
+  async findAllAdmin(page = 1, limit = 100, q?: string) {
+    const safePage = page > 0 ? page : 1;
+    const safeLimit = Math.min(Math.max(limit || 100, 1), 100);
+    const filter: Record<string, unknown> = {};
+    const term = q?.trim();
+    if (term) {
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.$or = [
+        { name: { $regex: escaped, $options: 'i' } },
+        { code: { $regex: escaped, $options: 'i' } },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      this.productModel
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((safePage - 1) * safeLimit)
+        .limit(safeLimit)
+        .lean()
+        .exec(),
+      this.productModel.countDocuments(filter).exec(),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / safeLimit));
+    return {
+      items,
+      total,
+      page: safePage,
+      limit: safeLimit,
+      totalPages,
+    };
   }
 
   async findBySlug(slug: string) {
@@ -370,5 +403,6 @@ export class ProductsService {
       await this.redis.del(`products:slug:${slug}`);
     }
     await this.redis.delByPattern('seo:*');
+    await this.redis.delByPattern('categories:list*');
   }
 }

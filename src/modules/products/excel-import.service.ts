@@ -1,0 +1,776 @@
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { unlink } from 'fs/promises';
+import { extname } from 'path';
+import { randomUUID } from 'crypto';
+import ExcelJS from 'exceljs';
+import { Product } from './schemas/product.schema';
+import { CategoriesService } from '../categories/categories.service';
+import { RedisService } from '../redis/redis.service';
+import { R2StorageService } from '../uploads/r2-storage.service';
+import { slugify } from '../../common/utils/slugify';
+import { ProductStatus } from '../../common/enums/product-status.enum';
+import {
+  extractRowImagesFromXlsx,
+  preserveImageBuffer,
+} from './excel-image-extractor';
+
+export const EXCEL_IMPORT_MAX_BYTES = 150 * 1024 * 1024;
+
+const PRODUCT_IMAGE_PLACEHOLDER =
+  'https://images.unsplash.com/photo-1556911220-e15b29be8c8f?w=1200&q=80';
+
+type ColumnKind =
+  | 'code'
+  | 'name'
+  | 'category'
+  | 'price'
+  | 'wholesale'
+  | 'stock'
+  | 'skip'
+  | 'spec';
+
+type ColumnDef = { kind: ColumnKind; label: string };
+
+export type ExcelImportResult = {
+  ok: number;
+  failed: number;
+  created: number;
+  updated: number;
+  deleted: number;
+  createdCategories: number;
+  totalRows: number;
+  errors: string[];
+};
+
+type ParsedRow = {
+  excelRow: number;
+  code: string;
+  name: string;
+  categoryName: string;
+  price: number;
+  wholesalePrice: number;
+  stock: number;
+  specs: Array<{ label: string; value: string }>;
+  imageUrl: string;
+};
+
+@Injectable()
+export class ExcelImportService {
+  private readonly logger = new Logger(ExcelImportService.name);
+
+  constructor(
+    @InjectModel(Product.name) private readonly productModel: Model<Product>,
+    private readonly categoriesService: CategoriesService,
+    private readonly redis: RedisService,
+    private readonly r2: R2StorageService,
+  ) {}
+
+  async importFromUpload(
+    file: Express.Multer.File,
+    options?: { replace?: boolean },
+  ): Promise<ExcelImportResult> {
+    if (!file?.path) {
+      throw new BadRequestException('Excel fayl yuklanmadi');
+    }
+
+    const ext = extname(file.originalname || '').toLowerCase();
+    if (ext && ext !== '.xlsx') {
+      await this.safeUnlink(file.path);
+      throw new BadRequestException(
+        'Faqat .xlsx format qabul qilinadi. Faylni .xlsx qilib saqlang.',
+      );
+    }
+
+    try {
+      return await this.importFromPath(file.path, {
+        replace: Boolean(options?.replace),
+      });
+    } finally {
+      await this.safeUnlink(file.path);
+    }
+  }
+
+  private async importFromPath(
+    filePath: string,
+    options?: { replace?: boolean },
+  ): Promise<ExcelImportResult> {
+    const workbook = new ExcelJS.Workbook();
+    try {
+      await workbook.xlsx.readFile(filePath);
+    } catch (e) {
+      this.logger.warn(`Excel ochilmadi: ${String(e)}`);
+      throw new BadRequestException(
+        'Excel oʻqilmadi. Faylni .xlsx formatida saqlab qayta urinib koʻring.',
+      );
+    }
+
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
+      throw new BadRequestException('Excelda varaq (sheet) topilmadi');
+    }
+
+    const { headerRowNumber, columns } = this.findHeader(worksheet);
+    if (!headerRowNumber || !columns.length) {
+      throw new BadRequestException(
+        'Header topilmadi. Excelda «Код» va «Название» ustunlari boʻlishi kerak.',
+      );
+    }
+
+    const imagesByRow = await this.extractImages(
+      filePath,
+      workbook,
+      worksheet,
+    );
+
+    const parsed: ParsedRow[] = [];
+    const errors: string[] = [];
+
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber <= headerRowNumber) return;
+
+      try {
+        const item = this.parseDataRow(row, rowNumber, columns, imagesByRow);
+        if (item) parsed.push(item);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Qator xato';
+        errors.push(`Qator ${rowNumber}: ${msg}`);
+      }
+    });
+
+    if (!parsed.length) {
+      throw new BadRequestException(
+        'Excelda mahsulot qatorlari topilmadi. Formatni tekshiring.',
+      );
+    }
+
+    let deleted = 0;
+    if (options?.replace) {
+      deleted = await this.wipeAllProducts();
+      this.logger.log(
+        `Replace import: ${deleted} ta eski mahsulot 100% o‘chirildi`,
+      );
+    }
+
+    const result = await this.persistRows(parsed, errors, {
+      replace: Boolean(options?.replace),
+    });
+    return { ...result, deleted };
+  }
+
+  /** Barcha mahsulotlarni to‘liq o‘chiradi va cache tozalaydi. */
+  private async wipeAllProducts(): Promise<number> {
+    const del = await this.productModel.deleteMany({}).exec();
+    const left = await this.productModel.countDocuments().exec();
+    if (left > 0) {
+      const again = await this.productModel.deleteMany({}).exec();
+      const still = await this.productModel.countDocuments().exec();
+      if (still > 0) {
+        throw new BadRequestException(
+          `Eski mahsulotlar toʻliq oʻchirilmadi (${still} ta qoldi). Qayta urinib koʻring.`,
+        );
+      }
+      await this.clearProductCaches();
+      return (del.deletedCount ?? 0) + (again.deletedCount ?? 0);
+    }
+    await this.clearProductCaches();
+    return del.deletedCount ?? 0;
+  }
+
+  private async clearProductCaches() {
+    await this.redis.delByPattern('products:list:*');
+    await this.redis.delByPattern('products:slug:*');
+    await this.redis.delByPattern('products:id:*');
+    await this.redis.delByPattern('seo:*');
+  }
+
+  private findHeader(worksheet: ExcelJS.Worksheet): {
+    headerRowNumber: number;
+    columns: ColumnDef[];
+  } {
+    const maxScan = Math.min(worksheet.rowCount || 30, 40);
+
+    for (let r = 1; r <= maxScan; r++) {
+      const row = worksheet.getRow(r);
+      const headers: string[] = [];
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        headers[colNumber - 1] = this.cellStr(cell.value);
+      });
+
+      while (headers.length && !headers[headers.length - 1]) {
+        headers.pop();
+      }
+
+      const normalized = headers.map((h) => this.normalizeHeader(h));
+      const hasCode = normalized.some(
+        (h) =>
+          h === 'код' ||
+          h === 'code' ||
+          h === 'kod' ||
+          h === 'артикул' ||
+          h === 'sku',
+      );
+      const hasName = normalized.some(
+        (h) =>
+          h === 'название' ||
+          h === 'наименование' ||
+          h === 'name' ||
+          h === 'nomi' ||
+          h === 'mahsulot',
+      );
+      const hasPhoto = normalized.some(
+        (h) => h === 'фото' || h === 'photo' || h === 'rasm' || h === 'image',
+      );
+
+      if (hasCode && (hasName || hasPhoto)) {
+        return {
+          headerRowNumber: r,
+          columns: headers.map((h) => this.classifyHeader(h)),
+        };
+      }
+    }
+
+    return { headerRowNumber: 0, columns: [] };
+  }
+
+  private classifyHeader(header: string): ColumnDef {
+    const h = this.normalizeHeader(header);
+    if (!h) return { kind: 'skip', label: header };
+
+    if (
+      h === '№' ||
+      h === 'no' ||
+      h === 'nomer' ||
+      h === '#' ||
+      h === 'фото' ||
+      h === 'photo' ||
+      h === 'rasm' ||
+      h === 'image' ||
+      h === 'ваш заказ' ||
+      h.includes('ваш заказ') ||
+      h === 'номер карточки'
+    ) {
+      return { kind: 'skip', label: header };
+    }
+
+    if (
+      h === 'код' ||
+      h === 'code' ||
+      h === 'kod' ||
+      h === 'артикул' ||
+      h === 'sku'
+    ) {
+      return { kind: 'code', label: header.trim() };
+    }
+
+    if (
+      h === 'название' ||
+      h === 'наименование' ||
+      h === 'name' ||
+      h === 'nomi' ||
+      h === 'mahsulot'
+    ) {
+      return { kind: 'name', label: header.trim() };
+    }
+
+    if (
+      h === 'группа' ||
+      h === 'group' ||
+      h === 'kategoriya' ||
+      h === 'категория' ||
+      h === 'category'
+    ) {
+      return { kind: 'category', label: header.trim() };
+    }
+
+    // J: discounted / markup USD price → wholesale
+    if (
+      (h.includes('прайс') || h.includes('price') || h.includes('цена')) &&
+      (h.includes('скидк') || h.includes('наценк') || h.includes('discount'))
+    ) {
+      return { kind: 'wholesale', label: header.trim() };
+    }
+
+    // I: base Прайс USD → retail price
+    if (
+      h.includes('прайс') &&
+      (h.includes('usd') || h.includes('тип цены') || h.includes('цена'))
+    ) {
+      return { kind: 'price', label: header.trim() };
+    }
+
+    if (
+      h === 'цена' ||
+      h === 'price' ||
+      h === 'narx' ||
+      h === 'oddiy narx' ||
+      h.includes('цена розн')
+    ) {
+      return { kind: 'price', label: header.trim() };
+    }
+
+    if (
+      h === 'оптом' ||
+      h === 'wholesale' ||
+      h === 'optom' ||
+      h.includes('цена опт')
+    ) {
+      return { kind: 'wholesale', label: header.trim() };
+    }
+
+    // Ombordagi son / кейсдаги кол-во → stock
+    if (
+      h === 'stock' ||
+      h === 'остаток' ||
+      h === 'ombor' ||
+      h === 'qoldiq' ||
+      h === 'soni' ||
+      h === 'количество' ||
+      h === 'кол-во' ||
+      h === 'кол во' ||
+      h.includes('кол-во в кейсе') ||
+      h.includes('количество в кейсе') ||
+      h.includes('qty in case') ||
+      h.includes('quantity in case') ||
+      (h.includes('кейсе') && (h.includes('кол') || h.includes('колич'))) ||
+      (h.includes('stock') && !h.includes('фото'))
+    ) {
+      return { kind: 'stock', label: header.trim() };
+    }
+
+    // Packaging / barcode / manufacturer → specs
+    return { kind: 'spec', label: header.trim() || h };
+  }
+
+  private parseDataRow(
+    row: ExcelJS.Row,
+    rowNumber: number,
+    columns: ColumnDef[],
+    imagesByRow: Map<number, string>,
+  ): ParsedRow | null {
+    let code = '';
+    let name = '';
+    let categoryName = '';
+    let price = 0;
+    let wholesalePrice = 0;
+    let hasWholesale = false;
+    let stock: number | null = null;
+    const specs: Array<{ label: string; value: string }> = [];
+
+    for (let c = 0; c < columns.length; c++) {
+      const col = columns[c]!;
+      if (col.kind === 'skip') continue;
+
+      const cell = row.getCell(c + 1);
+      const raw = cell.value;
+      const value = this.cellStr(raw);
+
+      if (
+        !value &&
+        col.kind !== 'price' &&
+        col.kind !== 'wholesale' &&
+        col.kind !== 'stock'
+      ) {
+        continue;
+      }
+
+      switch (col.kind) {
+        case 'code':
+          code = value.toUpperCase();
+          break;
+        case 'name':
+          name = value;
+          break;
+        case 'category':
+          categoryName = value;
+          break;
+        case 'price':
+          price = this.cellNum(raw, 0);
+          break;
+        case 'wholesale':
+          wholesalePrice = this.cellNum(raw, 0);
+          hasWholesale = true;
+          break;
+        case 'stock': {
+          const n = this.cellNum(raw, NaN);
+          if (Number.isFinite(n) && n >= 0) {
+            stock = Math.floor(n);
+          }
+          // Spec sifatida ham saqlaymiz (кейсе / qoldiq ma'lumoti)
+          if (value) specs.push({ label: col.label, value });
+          break;
+        }
+        case 'spec':
+          if (value) specs.push({ label: col.label, value });
+          break;
+        default:
+          break;
+      }
+    }
+
+    // Category / manufacturer separator rows (no product code)
+    if (!code && !name) return null;
+    if (!code) return null;
+
+    if (!name) name = code;
+    if (!hasWholesale) wholesalePrice = price;
+
+    return {
+      excelRow: rowNumber,
+      code,
+      name,
+      categoryName,
+      price,
+      wholesalePrice,
+      stock: stock != null ? stock : 1,
+      specs,
+      imageUrl: imagesByRow.get(rowNumber) || PRODUCT_IMAGE_PLACEHOLDER,
+    };
+  }
+
+  /**
+   * ZIP `xl/media` + drawings/cellimages orqali original bufferni oladi.
+   * Kattalashtirish / qayta siqish yo‘q — sifat saqlanadi.
+   */
+  private async extractImages(
+    filePath: string,
+    workbook: ExcelJS.Workbook,
+    worksheet: ExcelJS.Worksheet,
+  ): Promise<Map<number, string>> {
+    const byRow = new Map<number, string>();
+
+    let extracted: Awaited<ReturnType<typeof extractRowImagesFromXlsx>>;
+
+    try {
+      extracted = await extractRowImagesFromXlsx(filePath, {
+        workbook,
+        worksheet,
+      });
+    } catch (e) {
+      this.logger.warn(`ZIP rasm extract xato: ${String(e)}`);
+      return byRow;
+    }
+
+    this.logger.log(
+      `Excel rasmlar: ${extracted.size} ta qator (original buffer)`,
+    );
+
+    const entries = [...extracted.entries()];
+    const CONCURRENCY = 24;
+    for (let i = 0; i < entries.length; i += CONCURRENCY) {
+      const slice = entries.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        slice.map(async ([excelRow, img]) => {
+          try {
+            const preserved = await preserveImageBuffer(
+              img.buffer,
+              img.extension,
+            );
+            const filename = `${randomUUID()}.${preserved.ext}`;
+            const contentType =
+              preserved.ext === 'png'
+                ? 'image/png'
+                : preserved.ext === 'webp'
+                  ? 'image/webp'
+                  : preserved.ext === 'gif'
+                    ? 'image/gif'
+                    : 'image/jpeg';
+            const url = await this.r2.putObject({
+              key: `products/${filename}`,
+              body: preserved.buffer,
+              contentType,
+            });
+            byRow.set(excelRow, url);
+          } catch (e) {
+            this.logger.warn(
+              `Rasm saqlanmadi (qator ${excelRow}): ${String(e)}`,
+            );
+          }
+        }),
+      );
+    }
+
+    return byRow;
+  }
+
+  private async persistRows(
+    rows: ParsedRow[],
+    seedErrors: string[],
+    options?: { replace?: boolean },
+  ): Promise<ExcelImportResult> {
+    const errors = [...seedErrors];
+    let createdCategories = 0;
+    const forceReplace = Boolean(options?.replace);
+
+    const categories = (await this.categoriesService.findAll(false)) as Array<{
+      _id: Types.ObjectId | string;
+      name: string;
+    }>;
+    const catCache = new Map<string, string>();
+    for (const c of categories) {
+      catCache.set(this.normName(c.name), String(c._id));
+    }
+
+    const ensureCategory = async (name: string): Promise<string> => {
+      const key = this.normName(name);
+      const hit = catCache.get(key);
+      if (hit) return hit;
+
+      try {
+        const created = await this.categoriesService.create({
+          name: name.trim(),
+          isActive: true,
+        });
+        const id = String(
+          (created as { _id: Types.ObjectId | string })._id,
+        );
+        catCache.set(key, id);
+        createdCategories += 1;
+        return id;
+      } catch {
+        const refreshed = (await this.categoriesService.findAll(
+          false,
+        )) as Array<{ _id: Types.ObjectId | string; name: string }>;
+        for (const c of refreshed) {
+          catCache.set(this.normName(c.name), String(c._id));
+        }
+        const again = catCache.get(key);
+        if (again) return again;
+        throw new Error(`Kategoriya yaratilmadi: ${name}`);
+      }
+    };
+
+    const fallbackId = await ensureCategory('Boshqa');
+
+    // Replace: baza bo‘sh — upsert yo‘q, faqat insert (tezroq)
+    const existingByCode = new Map<string, { id: string; slug: string }>();
+    if (!forceReplace) {
+      const codes = [...new Set(rows.map((r) => r.code))];
+      const existing = await this.productModel
+        .find({ code: { $in: codes } })
+        .select('_id code slug')
+        .lean()
+        .exec();
+      for (const p of existing) {
+        existingByCode.set(String(p.code).toUpperCase(), {
+          id: String(p._id),
+          slug: p.slug as string,
+        });
+      }
+    }
+
+    const usedSlugs = new Set<string>();
+    if (!forceReplace) {
+      const slugs = await this.productModel.find({}).select('slug').lean().exec();
+      for (const p of slugs) usedSlugs.add(String(p.slug));
+    }
+
+    const allocSlug = (code: string, name: string): string => {
+      const root =
+        slugify(code) || slugify(name) || `p-${Date.now().toString(36)}`;
+      let candidate = root;
+      let i = 2;
+      while (usedSlugs.has(candidate)) {
+        candidate = `${root}-${i}`;
+        i += 1;
+      }
+      usedSlugs.add(candidate);
+      return candidate;
+    };
+
+    const docsByCode = new Map<string, Record<string, unknown>>();
+    const updateOps: Parameters<typeof this.productModel.bulkWrite>[0] = [];
+    let updated = 0;
+    let failed = 0;
+    const touchedIds: string[] = [];
+    const touchedSlugs: string[] = [];
+
+    for (const row of rows) {
+      try {
+        let categoryId = fallbackId;
+        if (row.categoryName.trim()) {
+          categoryId = await ensureCategory(row.categoryName);
+        }
+
+        const prev = forceReplace ? undefined : existingByCode.get(row.code);
+        if (prev) {
+          const $set: Record<string, unknown> = {
+            name: row.name,
+            code: row.code,
+            description: row.name,
+            price: row.price,
+            wholesalePrice: row.wholesalePrice,
+            stock: row.stock,
+            categoryId: new Types.ObjectId(categoryId),
+            specs: row.specs,
+            status: ProductStatus.Active,
+            isActive: true,
+            images: [row.imageUrl],
+          };
+          updateOps.push({
+            updateOne: {
+              filter: { _id: new Types.ObjectId(prev.id) },
+              update: { $set },
+            },
+          });
+          updated += 1;
+          touchedIds.push(prev.id);
+          touchedSlugs.push(prev.slug);
+        } else {
+          const existingDoc = docsByCode.get(row.code);
+          const id = existingDoc
+            ? (existingDoc._id as Types.ObjectId)
+            : new Types.ObjectId();
+          const slug = existingDoc
+            ? String(existingDoc.slug)
+            : allocSlug(row.code, row.name);
+          docsByCode.set(row.code, {
+            _id: id,
+            name: row.name,
+            code: row.code,
+            slug,
+            description: row.name,
+            price: row.price,
+            wholesalePrice: row.wholesalePrice,
+            stock: row.stock,
+            categoryId: new Types.ObjectId(categoryId),
+            images: [row.imageUrl],
+            specs: row.specs,
+            status: ProductStatus.Active,
+            isActive: true,
+            tags: [],
+          });
+          existingByCode.set(row.code, { id: String(id), slug });
+          if (!existingDoc) {
+            touchedIds.push(String(id));
+            touchedSlugs.push(slug);
+          }
+        }
+      } catch (e) {
+        failed += 1;
+        const msg = e instanceof Error ? e.message : 'Xato';
+        errors.push(`Qator ${row.excelRow} (${row.code}): ${msg}`);
+      }
+    }
+
+    const docs = [...docsByCode.values()];
+    const created = docs.length;
+
+    const CHUNK = 300;
+    for (let i = 0; i < docs.length; i += CHUNK) {
+      const chunk = docs.slice(i, i + CHUNK);
+      try {
+        await this.productModel.insertMany(chunk, { ordered: false });
+      } catch (e) {
+        this.logger.error(`insertMany xato: ${String(e)}`);
+        const writeErr = e as { message?: string };
+        errors.push(
+          `Yozishda xato (qism): ${writeErr.message || 'insertMany failed'}`,
+        );
+      }
+    }
+
+    for (let i = 0; i < updateOps.length; i += CHUNK) {
+      const chunk = updateOps.slice(i, i + CHUNK);
+      try {
+        await this.productModel.bulkWrite(chunk, { ordered: false });
+      } catch (e) {
+        this.logger.error(`bulkWrite xato: ${String(e)}`);
+        const writeErr = e as { message?: string };
+        errors.push(
+          `Yangilashda xato (qism): ${writeErr.message || 'bulkWrite failed'}`,
+        );
+      }
+    }
+
+    await this.invalidateCaches(touchedIds, touchedSlugs);
+
+    const ok = created + updated;
+    return {
+      ok,
+      failed,
+      created,
+      updated,
+      deleted: 0,
+      createdCategories,
+      totalRows: rows.length,
+      errors: errors.slice(0, 80),
+    };
+  }
+
+  private async invalidateCaches(ids: string[], slugs: string[]) {
+    await this.redis.delByPattern('products:list:*');
+    await this.redis.delByPattern('seo:*');
+    await this.redis.delByPattern('categories:list*');
+    for (const id of ids) {
+      await this.redis.del(`products:id:${id}`);
+    }
+    for (const slug of slugs) {
+      await this.redis.del(`products:slug:${slug}`);
+    }
+  }
+
+  private cellStr(value: unknown): string {
+    if (value == null || value === '') return '';
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
+    if (value instanceof Date) return value.toISOString().slice(0, 10);
+    if (typeof value === 'boolean') return value ? '1' : '0';
+    if (typeof value === 'object') {
+      const v = value as {
+        text?: string;
+        result?: unknown;
+        richText?: Array<{ text?: string }>;
+        hyperlink?: string;
+      };
+      if (typeof v.text === 'string') return v.text.trim();
+      if (Array.isArray(v.richText)) {
+        return v.richText
+          .map((t) => t.text || '')
+          .join('')
+          .trim();
+      }
+      if (v.result != null) return this.cellStr(v.result);
+    }
+    return String(value).trim();
+  }
+
+  private cellNum(value: unknown, fallback = 0): number {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'object' && value != null) {
+      const v = value as { result?: unknown };
+      if (v.result != null) return this.cellNum(v.result, fallback);
+    }
+    const s = this.cellStr(value).replace(/\s/g, '').replace(',', '.');
+    if (!s) return fallback;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  private normalizeHeader(raw: string): string {
+    return raw
+      .toLowerCase()
+      .replace(/\(\*\)/g, '')
+      .replace(/\*/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private normName(s: string) {
+    return s.trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  private async safeUnlink(path: string) {
+    try {
+      await unlink(path);
+    } catch {
+      /* ignore */
+    }
+  }
+}

@@ -3,13 +3,13 @@ import {
   Injectable,
   PayloadTooLargeException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { mkdir, writeFile, rename } from 'fs/promises';
-import { join, extname } from 'path';
+import { readFile, unlink } from 'fs/promises';
+import { extname } from 'path';
 import { randomUUID } from 'crypto';
 import type { Express } from 'express';
+import { R2StorageService } from './r2-storage.service';
 
-const IMAGE_MAX_BYTES = 2_500_000;
+const IMAGE_MAX_BYTES = 8_000_000;
 /** Large product/demo videos — Range streaming keeps playback smooth */
 export const VIDEO_MAX_BYTES = 200 * 1024 * 1024; // 200 MB
 
@@ -24,18 +24,24 @@ export type SavedMedia = {
   mimeType: string;
 };
 
+function imageContentType(ext: string): string {
+  switch (ext) {
+    case 'png':
+      return 'image/png';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    default:
+      return 'image/jpeg';
+  }
+}
+
 @Injectable()
 export class UploadsService {
-  constructor(private readonly configService: ConfigService) {}
-
-  private appBaseUrl(): string {
-    return this.configService.getOrThrow<string>('appUrl').replace(/\/$/, '');
-  }
+  constructor(private readonly r2: R2StorageService) {}
 
   async saveImages(dataUrls: string[]): Promise<string[]> {
-    const dir = join(process.cwd(), 'uploads', 'products');
-    await mkdir(dir, { recursive: true });
-    const appUrl = this.appBaseUrl();
     const urls: string[] = [];
 
     for (const dataUrl of dataUrls) {
@@ -52,19 +58,23 @@ export class UploadsService {
           : match[1].toLowerCase();
       const buffer = Buffer.from(match[2], 'base64');
       if (buffer.byteLength > IMAGE_MAX_BYTES) {
-        throw new BadRequestException('Image too large (max ~2.5MB)');
+        throw new BadRequestException('Image too large (max ~8MB)');
       }
 
       const filename = `${randomUUID()}.${ext}`;
-      await writeFile(join(dir, filename), buffer);
-      urls.push(`${appUrl}/uploads/products/${filename}`);
+      const url = await this.r2.putObject({
+        key: `products/${filename}`,
+        body: buffer,
+        contentType: imageContentType(ext),
+      });
+      urls.push(url);
     }
 
     return urls;
   }
 
   /**
-   * Finalize a multer disk-stored file into uploads/stories or uploads/videos.
+   * Finalize a multer disk-stored file into R2 (stories/ or videos/).
    */
   async saveUploadedMedia(file: Express.Multer.File): Promise<SavedMedia> {
     if (!file) {
@@ -81,6 +91,7 @@ export class UploadsService {
     let mediaType: 'image' | 'video';
     let folder: string;
     let ext: string;
+    let contentType: string;
 
     if (mime.startsWith('image/') || IMAGE_EXTS.has(originalExt)) {
       mediaType = 'image';
@@ -100,6 +111,9 @@ export class UploadsService {
               : mime.includes('gif')
                 ? '.gif'
                 : '.jpg';
+      contentType = mime.startsWith('image/')
+        ? mime
+        : imageContentType(ext.slice(1));
     } else if (mime.startsWith('video/') || VIDEO_EXTS.has(originalExt)) {
       mediaType = 'video';
       folder = 'videos';
@@ -109,34 +123,45 @@ export class UploadsService {
           : mime.includes('webm')
             ? '.webm'
             : '.mp4';
+      contentType =
+        mime.startsWith('video/')
+          ? mime
+          : ext === '.webm'
+            ? 'video/webm'
+            : 'video/mp4';
     } else {
       throw new BadRequestException(
         'Unsupported file type. Use image (jpg/png/webp) or video (mp4/webm)',
       );
     }
 
-    const dir = join(process.cwd(), 'uploads', folder);
-    await mkdir(dir, { recursive: true });
     const filename = `${randomUUID()}${ext}`;
-    const dest = join(dir, filename);
-
-    // Multer diskStorage already wrote to file.path — move into final folder
+    let body: Buffer;
     if (file.path) {
-      await rename(file.path, dest);
+      body = await readFile(file.path);
+      try {
+        await unlink(file.path);
+      } catch {
+        /* temp cleanup best-effort */
+      }
     } else if (file.buffer) {
-      await writeFile(dest, file.buffer);
+      body = file.buffer;
     } else {
       throw new BadRequestException('Empty file');
     }
 
-    const url = `${this.appBaseUrl()}/uploads/${folder}/${filename}`;
+    const url = await this.r2.putObject({
+      key: `${folder}/${filename}`,
+      body,
+      contentType,
+    });
 
     return {
       url,
       mediaType,
       filename,
       size: file.size,
-      mimeType: mime || `${mediaType}/${ext.slice(1)}`,
+      mimeType: contentType,
     };
   }
 }

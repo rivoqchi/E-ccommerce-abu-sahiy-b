@@ -7,8 +7,10 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { ConfigService } from '@nestjs/config';
 import { Category } from './schemas/category.schema';
+import { Product } from '../products/schemas/product.schema';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
+import { ProductStatus } from '../../common/enums/product-status.enum';
 import { slugify } from '../../common/utils/slugify';
 import { RedisService } from '../redis/redis.service';
 
@@ -18,6 +20,7 @@ const LIST_CACHE_KEY = 'categories:list';
 export class CategoriesService {
   constructor(
     @InjectModel(Category.name) private readonly categoryModel: Model<Category>,
+    @InjectModel(Product.name) private readonly productModel: Model<Product>,
     private readonly redis: RedisService,
     private readonly configService: ConfigService,
   ) {}
@@ -40,15 +43,41 @@ export class CategoriesService {
   }
 
   async findAll(activeOnly = true) {
-    const cacheKey = `${LIST_CACHE_KEY}:${activeOnly ? 'active' : 'all'}`;
+    const cacheKey = `${LIST_CACHE_KEY}:${activeOnly ? 'active' : 'all'}:counts`;
     const cached = await this.redis.getJson<unknown[]>(cacheKey);
     if (cached) return cached;
 
     const filter = activeOnly ? { isActive: true } : {};
     const categories = await this.categoryModel
-      .find(filter)
-      .sort({ sortOrder: 1, name: 1 })
-      .lean()
+      .aggregate([
+        { $match: filter },
+        { $sort: { sortOrder: 1, name: 1 } },
+        {
+          $lookup: {
+            from: this.productModel.collection.name,
+            let: { categoryId: '$_id' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: { $eq: ['$categoryId', '$$categoryId'] },
+                  status: ProductStatus.Active,
+                  isActive: true,
+                },
+              },
+              { $count: 'count' },
+            ],
+            as: 'productStats',
+          },
+        },
+        {
+          $addFields: {
+            productCount: {
+              $ifNull: [{ $arrayElemAt: ['$productStats.count', 0] }, 0],
+            },
+          },
+        },
+        { $project: { productStats: 0 } },
+      ])
       .exec();
 
     const ttl = this.configService.get<number>('cacheTtlSeconds', 60);

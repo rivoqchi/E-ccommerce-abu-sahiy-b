@@ -116,7 +116,17 @@ export class OrdersService {
     }> = [];
 
     for (const line of dto.items) {
-      const product = await this.productsService.findById(line.productId);
+      let product;
+      try {
+        product = await this.productsService.findById(line.productId);
+      } catch (err) {
+        if (err instanceof NotFoundException) {
+          throw new BadRequestException(
+            "Savatdagi ba'zi mahsulotlar topilmadi. Savatni yangilang va qayta urinib ko'ring.",
+          );
+        }
+        throw err;
+      }
       if (!product.isActive) {
         throw new BadRequestException(`Mahsulot mavjud emas: ${product.name}`);
       }

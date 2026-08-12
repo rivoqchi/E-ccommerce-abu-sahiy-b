@@ -60,6 +60,59 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** SET key NX EX — returns true if lock acquired */
+  async setNx(key: string, value: string, ttlSeconds: number): Promise<boolean> {
+    try {
+      const result = await this.client.set(key, value, 'EX', ttlSeconds, 'NX');
+      return result === 'OK';
+    } catch (err) {
+      this.logger.warn(`Redis setNx failed for ${key}: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  async getDelIfMatch(key: string, expected: string): Promise<void> {
+    try {
+      const script = `
+        if redis.call("get", KEYS[1]) == ARGV[1] then
+          return redis.call("del", KEYS[1])
+        end
+        return 0
+      `;
+      await this.client.eval(script, 1, key, expected);
+    } catch (err) {
+      this.logger.warn(
+        `Redis getDelIfMatch failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  async renewIfMatch(
+    key: string,
+    expected: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    try {
+      const script = `
+        if redis.call("get", KEYS[1]) == ARGV[1] then
+          return redis.call("set", KEYS[1], ARGV[1], "EX", ARGV[2])
+        end
+        return 0
+      `;
+      const result = await this.client.eval(
+        script,
+        1,
+        key,
+        expected,
+        String(ttlSeconds),
+      );
+      return result === 'OK' || result === 1;
+    } catch (err) {
+      this.logger.warn(`Redis renewIfMatch failed: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
   async del(...keys: string[]): Promise<void> {
     if (!keys.length) return;
     try {

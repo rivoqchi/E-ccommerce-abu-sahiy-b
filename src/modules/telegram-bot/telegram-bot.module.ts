@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
 import { UsersModule } from '../users/users.module';
 import { OrdersModule } from '../orders/orders.module';
+import { AuthModule } from '../auth/auth.module';
 import { TelegramBotService } from './telegram-bot.service';
 import { TelegramBotController } from './telegram-bot.controller';
 
 @Module({
-  imports: [UsersModule, OrdersModule],
+  imports: [UsersModule, OrdersModule, AuthModule],
   controllers: [TelegramBotController],
   providers: [TelegramBotService],
   exports: [TelegramBotService],

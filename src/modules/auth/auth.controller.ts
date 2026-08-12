@@ -7,6 +7,8 @@ import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { TelegramAuthDto } from './dto/telegram-auth.dto';
 import { TelegramContactDto } from './dto/telegram-contact.dto';
+import { VerifyBotOtpDto } from './dto/verify-bot-otp.dto';
+import { BotWebLoginDto } from './dto/bot-web-login.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import {
@@ -40,6 +42,20 @@ export class AuthController {
   @Post('otp/verify')
   verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.authService.verifyOtp(dto.phone, dto.code);
+  }
+
+  /** Web login: bot yuborgan 6 xonali kod */
+  @Public()
+  @Post('bot-otp/verify')
+  verifyBotOtp(@Body() dto: VerifyBotOtpDto) {
+    return this.authService.verifyBotLoginCode(dto.code);
+  }
+
+  /** Open Web one-time token → JWT */
+  @Public()
+  @Post('bot-web-login')
+  botWebLogin(@Body() dto: BotWebLoginDto) {
+    return this.authService.consumeBotWebLoginToken(dto.token);
   }
 
   @Public()

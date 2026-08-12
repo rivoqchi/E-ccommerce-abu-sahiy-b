@@ -59,6 +59,9 @@ async function bootstrap() {
   app.useGlobalFilters(new AllExceptionsFilter());
   app.useGlobalInterceptors(new TransformInterceptor());
 
+  // SIGINT/SIGTERM da OnModuleDestroy (bot polling stop) ishlashi uchun
+  app.enableShutdownHooks();
+
   const port = config.getOrThrow<number>('port');
   const appUrl = config.getOrThrow<string>('appUrl');
   await app.listen(port);

@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomBytes, randomInt } from 'crypto';
 import { UsersService } from '../users/users.service';
 import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
@@ -21,6 +22,15 @@ interface OtpSession {
   requestId: string;
   phone: string;
   createdAt: number;
+}
+
+interface BotOtpPayload {
+  userId: string;
+  telegramId: string;
+}
+
+interface BotWebLoginPayload {
+  userId: string;
 }
 
 @Injectable()
@@ -251,6 +261,146 @@ export class AuthService {
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
 
+    return {
+      user: this.usersService.toPublic(user),
+      ...tokens,
+    };
+  }
+
+  /**
+   * Bot «Kod yuborish»: 6 xonali kod (TTL/cooldown default 10 daqiqa).
+   */
+  async issueBotLoginCode(telegramId: string): Promise<{
+    code: string;
+    expiresIn: number;
+    cooldown: number;
+  }> {
+    const user = await this.usersService.findByTelegramId(telegramId);
+    if (!user?.phone) {
+      throw new BadRequestException(
+        'Avval botda telefon raqamingizni yuboring',
+      );
+    }
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is disabled');
+    }
+
+    const ttl =
+      this.configService.get<number>('telegram.otpTtlSeconds') ?? 600;
+    const cooldownSeconds =
+      this.configService.get<number>('telegram.otpCooldownSeconds') ?? 600;
+
+    const cooldownKey = `bot-otp:cooldown:${telegramId}`;
+    if (await this.redisService.get(cooldownKey)) {
+      throw new HttpException(
+        'Yangi kod uchun 10 daqiqa kuting',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const userCodeKey = `bot-otp:user:${telegramId}`;
+    const previousCode = await this.redisService.get(userCodeKey);
+    if (previousCode) {
+      await this.redisService.del(`bot-otp:code:${previousCode}`);
+    }
+
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      const candidate = String(randomInt(100000, 999999));
+      const exists = await this.redisService.get(`bot-otp:code:${candidate}`);
+      if (!exists) {
+        code = candidate;
+        break;
+      }
+    }
+    if (!code) {
+      throw new BadRequestException('Kod yaratib bo‘lmadi. Qayta urinib ko‘ring');
+    }
+
+    const payload: BotOtpPayload = {
+      userId: user._id.toString(),
+      telegramId,
+    };
+    await this.redisService.setJson(`bot-otp:code:${code}`, payload, ttl);
+    await this.redisService.set(userCodeKey, code, ttl);
+    await this.redisService.set(cooldownKey, '1', cooldownSeconds);
+
+    return { code, expiresIn: ttl, cooldown: cooldownSeconds };
+  }
+
+  /** Web login: faqat kod (telefon yo‘q). */
+  async verifyBotLoginCode(code: string) {
+    const normalized = code.trim();
+    const key = `bot-otp:code:${normalized}`;
+    const payload = await this.redisService.getJson<BotOtpPayload>(key);
+    if (!payload?.userId) {
+      throw new UnauthorizedException('Kod noto‘g‘ri yoki muddati tugagan');
+    }
+
+    await this.redisService.del(
+      key,
+      `bot-otp:user:${payload.telegramId}`,
+    );
+
+    let user = await this.usersService.findById(payload.userId);
+    user = await this.usersService.ensureSuperAdmin(user);
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is disabled');
+    }
+
+    const tokens = await this.issueTokens(user);
+    await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
+    return {
+      user: this.usersService.toPublic(user),
+      ...tokens,
+    };
+  }
+
+  /**
+   * Open Web: one-time login URL (kod kiritish shart emas).
+   */
+  async createBotWebLoginUrl(telegramId: string): Promise<string> {
+    const user = await this.usersService.findByTelegramId(telegramId);
+    if (!user?.phone) {
+      throw new BadRequestException(
+        'Avval botda telefon raqamingizni yuboring',
+      );
+    }
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is disabled');
+    }
+
+    const token = createHash('sha256')
+      .update(`${telegramId}:${randomBytes(32).toString('hex')}`)
+      .digest('hex');
+    const payload: BotWebLoginPayload = { userId: user._id.toString() };
+    // Link qisqa muddatli (10 daqiqa OTP bilan bir xil)
+    const ttl =
+      this.configService.get<number>('telegram.otpTtlSeconds') ?? 600;
+    await this.redisService.setJson(`bot-web-login:${token}`, payload, ttl);
+
+    const frontend = this.configService
+      .getOrThrow<string>('frontendUrl')
+      .replace(/\/$/, '');
+    return `${frontend}/login?token=${token}`;
+  }
+
+  async consumeBotWebLoginToken(token: string) {
+    const key = `bot-web-login:${token.trim()}`;
+    const payload = await this.redisService.getJson<BotWebLoginPayload>(key);
+    if (!payload?.userId) {
+      throw new UnauthorizedException('Link muddati tugagan yoki noto‘g‘ri');
+    }
+    await this.redisService.del(key);
+
+    let user = await this.usersService.findById(payload.userId);
+    user = await this.usersService.ensureSuperAdmin(user);
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is disabled');
+    }
+
+    const tokens = await this.issueTokens(user);
+    await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
     return {
       user: this.usersService.toPublic(user),
       ...tokens,

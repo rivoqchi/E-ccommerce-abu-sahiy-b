@@ -52,14 +52,17 @@ export default () => ({
     gatewayUrl: requireEnv('TELEGRAM_GATEWAY_URL').replace(/\/$/, ''),
     gatewayMock: process.env.GATEWAY_MOCK === 'true',
     gatewayMockCode: optionalEnv('GATEWAY_MOCK_CODE', '123456'),
-    otpTtlSeconds: parseInt(optionalEnv('OTP_TTL_SECONDS', '120'), 10),
-    otpCooldownSeconds: parseInt(optionalEnv('OTP_COOLDOWN_SECONDS', '60'), 10),
+    otpTtlSeconds: parseInt(optionalEnv('OTP_TTL_SECONDS', '600'), 10),
+    otpCooldownSeconds: parseInt(optionalEnv('OTP_COOLDOWN_SECONDS', '600'), 10),
     otpDailyLimit: parseInt(optionalEnv('OTP_DAILY_LIMIT', '10'), 10),
     initDataMaxAgeSeconds: parseInt(
       optionalEnv('TELEGRAM_INITDATA_MAX_AGE_SECONDS', '86400'),
       10,
     ),
     superAdminPhone: optionalEnv('SUPER_ADMIN_PHONE'),
+    botUsername: optionalEnv('TELEGRAM_BOT_USERNAME'),
+    /** Telegram Mini App HTTPS URL (local FRONTEND_URL emas) */
+    miniAppUrl: optionalEnv('TELEGRAM_MINI_APP_URL').replace(/\/$/, ''),
   },
 
   /** Cloudflare R2 (S3-compatible) media storage */

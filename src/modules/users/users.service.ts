@@ -48,7 +48,9 @@ export class UsersService {
   }
 
   async findByPhone(phone: string): Promise<UserDocument | null> {
-    return this.userModel.findOne({ phone }).exec();
+    const variants = phoneLookupVariants(phone);
+    if (!variants.length) return null;
+    return this.userModel.findOne({ phone: { $in: variants } }).exec();
   }
 
   async findByTelegramId(telegramId: string): Promise<UserDocument | null> {
@@ -67,6 +69,10 @@ export class UsersService {
     const existing = await this.findByPhone(normalized);
     if (existing) {
       let dirty = false;
+      if (existing.phone !== normalized) {
+        existing.phone = normalized;
+        dirty = true;
+      }
       if (profile?.fullName && existing.fullName !== profile.fullName) {
         existing.fullName = profile.fullName;
         dirty = true;
@@ -85,7 +91,7 @@ export class UsersService {
 
     return this.userModel.create({
       phone: normalized,
-      email: `guest.${normalized.replace(/\D/g, '')}@checkout.local`,
+      email: guestEmailForPhone(normalized),
       fullName: profile?.fullName?.trim() || normalized,
       firstName: profile?.firstName?.trim(),
       lastName: profile?.lastName?.trim(),
@@ -160,7 +166,7 @@ export class UsersService {
     username?: string;
   }): Promise<UserDocument> {
     const normalized = normalizePhone(data.phone);
-    if (!normalized) {
+    if (!normalized || normalized.replace(/\D/g, '').length < 8) {
       throw new BadRequestException('Invalid phone number');
     }
 
@@ -168,17 +174,18 @@ export class UsersService {
       [data.firstName, data.lastName].filter(Boolean).join(' ').trim() ||
       normalized;
     const username = data.username?.replace(/^@/, '') || undefined;
+    const guestEmail = guestEmailForPhone(normalized);
 
-    const byTelegram = await this.findByTelegramId(data.telegramId);
-    if (byTelegram) {
-      const user = await this.linkPhoneFromTelegram(
-        byTelegram._id.toString(),
-        normalized,
-        data.telegramId,
-        { firstName: data.firstName, lastName: data.lastName },
-      );
-
+    const applyProfile = async (user: UserDocument) => {
       let dirty = false;
+      if (user.phone !== normalized) {
+        user.phone = normalized;
+        dirty = true;
+      }
+      if (!user.email) {
+        user.email = guestEmail;
+        dirty = true;
+      }
       if (username && user.username !== username) {
         user.username = username;
         dirty = true;
@@ -195,42 +202,120 @@ export class UsersService {
         user.fullName = fullName;
         dirty = true;
       }
-      if (dirty) await user.save();
-
+      if (user.telegramId !== data.telegramId) {
+        user.telegramId = data.telegramId;
+        dirty = true;
+      }
+      if (!user.isActive) {
+        user.isActive = true;
+        dirty = true;
+      }
+      if (dirty) {
+        try {
+          await user.save();
+        } catch (err) {
+          // username unique conflict — profilning qolgan maydonlarini saqlaymiz
+          if (isDuplicateKeyError(err) && username) {
+            user.username = undefined;
+            await user.save();
+          } else {
+            throw err;
+          }
+        }
+      }
       return this.ensureSuperAdmin(user);
+    };
+
+    const byTelegram = await this.findByTelegramId(data.telegramId);
+    if (byTelegram) {
+      const samePhone =
+        byTelegram.phone &&
+        phonesMatch(byTelegram.phone, normalized);
+
+      if (samePhone) {
+        return applyProfile(byTelegram);
+      }
+
+      try {
+        const linked = await this.linkPhoneFromTelegram(
+          byTelegram._id.toString(),
+          normalized,
+          data.telegramId,
+          { firstName: data.firstName, lastName: data.lastName },
+        );
+        return applyProfile(linked);
+      } catch (err) {
+        if (err instanceof ConflictException) throw err;
+        // Recover: phone account may already exist — attach if free
+        const byPhone = await this.findByPhoneOrGuestEmail(
+          normalized,
+          guestEmail,
+        );
+        if (
+          byPhone &&
+          (!byPhone.telegramId || byPhone.telegramId === data.telegramId)
+        ) {
+          return applyProfile(byPhone);
+        }
+        throw err;
+      }
     }
 
-    const byPhone = await this.findByPhone(normalized);
-    if (byPhone) {
-      if (byPhone.telegramId && byPhone.telegramId !== data.telegramId) {
+    const existing = await this.findByPhoneOrGuestEmail(
+      normalized,
+      guestEmail,
+    );
+    if (existing) {
+      if (existing.telegramId && existing.telegramId !== data.telegramId) {
         throw new ConflictException(
           'Phone already linked to another Telegram account',
         );
       }
-
-      byPhone.telegramId = data.telegramId;
-      if (username) byPhone.username = username;
-      if (data.firstName) byPhone.firstName = data.firstName;
-      if (data.lastName) byPhone.lastName = data.lastName;
-      if (fullName) byPhone.fullName = fullName;
-      await byPhone.save();
-
-      return this.ensureSuperAdmin(byPhone);
+      return applyProfile(existing);
     }
 
-    const created = await this.userModel.create({
-      phone: normalized,
-      telegramId: data.telegramId,
-      email: `guest.${normalized.replace(/\D/g, '')}@checkout.local`,
-      fullName,
-      firstName: data.firstName?.trim() || undefined,
-      lastName: data.lastName?.trim() || undefined,
-      username,
-      role: Role.Customer,
-      priceTier: PriceTier.Retail,
-    });
+    try {
+      const created = await this.userModel.create({
+        phone: normalized,
+        telegramId: data.telegramId,
+        email: guestEmail,
+        fullName,
+        firstName: data.firstName?.trim() || undefined,
+        lastName: data.lastName?.trim() || undefined,
+        username,
+        role: Role.Customer,
+        priceTier: PriceTier.Retail,
+      });
+      return this.ensureSuperAdmin(created);
+    } catch (err) {
+      if (!isDuplicateKeyError(err)) throw err;
 
-    return this.ensureSuperAdmin(created);
+      const raced = await this.findByPhoneOrGuestEmail(normalized, guestEmail);
+      if (
+        raced &&
+        (!raced.telegramId || raced.telegramId === data.telegramId)
+      ) {
+        return applyProfile(raced);
+      }
+
+      const byTg = await this.findByTelegramId(data.telegramId);
+      if (byTg) {
+        return applyProfile(byTg);
+      }
+
+      throw new ConflictException(
+        'Phone already linked to another Telegram account',
+      );
+    }
+  }
+
+  private async findByPhoneOrGuestEmail(
+    phone: string,
+    guestEmail: string,
+  ): Promise<UserDocument | null> {
+    const byPhone = await this.findByPhone(phone);
+    if (byPhone) return byPhone;
+    return this.userModel.findOne({ email: guestEmail.toLowerCase() }).exec();
   }
 
   async linkTelegramId(
@@ -586,10 +671,54 @@ export class UsersService {
 }
 
 function normalizePhone(phone: string): string {
-  const trimmed = phone.trim().replace(/[\s\-()]/g, '');
+  let trimmed = phone.trim().replace(/[\s\-()]/g, '');
   if (!trimmed) return '';
+  if (trimmed.startsWith('00')) trimmed = `+${trimmed.slice(2)}`;
   if (trimmed.startsWith('+')) return trimmed;
-  // Telegram contact often sends digits only, e.g. 998901234567
+  // Telegram contact: 998901234567
+  if (/^998\d{9}$/.test(trimmed)) return `+${trimmed}`;
+  // Local UZ mobile without country: 901234567
+  if (/^9\d{8}$/.test(trimmed)) return `+998${trimmed}`;
   if (/^\d{8,15}$/.test(trimmed)) return `+${trimmed}`;
   return trimmed;
+}
+
+function phoneLookupVariants(phone: string): string[] {
+  const normalized = normalizePhone(phone);
+  const digits = normalized.replace(/\D/g, '');
+  const variants = new Set<string>();
+  const raw = phone.trim().replace(/[\s\-()]/g, '');
+  if (raw) variants.add(raw);
+  if (normalized) variants.add(normalized);
+  if (digits) {
+    variants.add(digits);
+    variants.add(`+${digits}`);
+  }
+  if (/^998\d{9}$/.test(digits)) {
+    variants.add(digits.slice(3)); // 9XXXXXXXX
+  }
+  if (/^9\d{8}$/.test(digits)) {
+    variants.add(`998${digits}`);
+    variants.add(`+998${digits}`);
+  }
+  return [...variants].filter(Boolean);
+}
+
+function phonesMatch(a: string, b: string): boolean {
+  const da = normalizePhone(a).replace(/\D/g, '');
+  const db = normalizePhone(b).replace(/\D/g, '');
+  return Boolean(da && db && da === db);
+}
+
+function guestEmailForPhone(phone: string): string {
+  return `guest.${normalizePhone(phone).replace(/\D/g, '')}@checkout.local`;
+}
+
+function isDuplicateKeyError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: number }).code === 11000
+  );
 }

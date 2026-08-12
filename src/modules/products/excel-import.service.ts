@@ -25,6 +25,15 @@ export const EXCEL_IMPORT_MAX_BYTES = 150 * 1024 * 1024;
 const PRODUCT_IMAGE_PLACEHOLDER =
   'https://images.unsplash.com/photo-1556911220-e15b29be8c8f?w=1200&q=80';
 
+/** Unsplash placeholder yoki bo‘sh URL — haqiqiy R2 rasm emas. */
+export function isPlaceholderProductImage(url?: string | null): boolean {
+  const u = url?.trim();
+  if (!u) return true;
+  if (u === PRODUCT_IMAGE_PLACEHOLDER) return true;
+  if (u.includes('photo-1556911220-e15b29be8c8f')) return true;
+  return false;
+}
+
 type ColumnKind =
   | 'code'
   | 'name'
@@ -122,20 +131,15 @@ export class ExcelImportService {
       );
     }
 
-    const imagesByRow = await this.extractImages(
-      filePath,
-      workbook,
-      worksheet,
-    );
-
     const parsed: ParsedRow[] = [];
     const errors: string[] = [];
+    const emptyImages = new Map<number, string>();
 
     worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
       if (rowNumber <= headerRowNumber) return;
 
       try {
-        const item = this.parseDataRow(row, rowNumber, columns, imagesByRow);
+        const item = this.parseDataRow(row, rowNumber, columns, emptyImages);
         if (item) parsed.push(item);
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Qator xato';
@@ -149,44 +153,42 @@ export class ExcelImportService {
       );
     }
 
-    let deleted = 0;
+    // Mavjud tovarlar (case-insensitive kod) — ular uchun Excel rasmi yuklanmaydi.
+    const codes = [...new Set(parsed.map((r) => r.code))];
+    const existing = await this.findExistingByCodes(codes);
+    const existingCodes = new Set(existing.map((p) => this.normCode(p.code)));
+
+    const rowsNeedingImage = new Set(
+      parsed
+        .filter((r) => !existingCodes.has(r.code))
+        .map((r) => r.excelRow),
+    );
+
+    const imagesByRow = await this.extractImages(
+      filePath,
+      workbook,
+      worksheet,
+      rowsNeedingImage,
+    );
+    for (const row of parsed) {
+      // Mavjud tovar: imageUrl umuman qo‘yilmaydi (persist ham images ga tegmaydi).
+      if (existingCodes.has(row.code)) {
+        row.imageUrl = PRODUCT_IMAGE_PLACEHOLDER;
+        continue;
+      }
+      const url = imagesByRow.get(row.excelRow);
+      if (url) row.imageUrl = url;
+    }
+
+    // replace=true ham wipe qilmaydi — kod bo‘yicha upsert; eski R2 rasmlar saqlanadi.
     if (options?.replace) {
-      deleted = await this.wipeAllProducts();
       this.logger.log(
-        `Replace import: ${deleted} ta eski mahsulot 100% o‘chirildi`,
+        `Replace import: wipe yo‘q, kod bo‘yicha upsert (${parsed.length} qator)`,
       );
     }
 
-    const result = await this.persistRows(parsed, errors, {
-      replace: Boolean(options?.replace),
-    });
-    return { ...result, deleted };
-  }
-
-  /** Barcha mahsulotlarni to‘liq o‘chiradi va cache tozalaydi. */
-  private async wipeAllProducts(): Promise<number> {
-    const del = await this.productModel.deleteMany({}).exec();
-    const left = await this.productModel.countDocuments().exec();
-    if (left > 0) {
-      const again = await this.productModel.deleteMany({}).exec();
-      const still = await this.productModel.countDocuments().exec();
-      if (still > 0) {
-        throw new BadRequestException(
-          `Eski mahsulotlar toʻliq oʻchirilmadi (${still} ta qoldi). Qayta urinib koʻring.`,
-        );
-      }
-      await this.clearProductCaches();
-      return (del.deletedCount ?? 0) + (again.deletedCount ?? 0);
-    }
-    await this.clearProductCaches();
-    return del.deletedCount ?? 0;
-  }
-
-  private async clearProductCaches() {
-    await this.redis.delByPattern('products:list:*');
-    await this.redis.delByPattern('products:slug:*');
-    await this.redis.delByPattern('products:id:*');
-    await this.redis.delByPattern('seo:*');
+    const result = await this.persistRows(parsed, errors);
+    return { ...result, deleted: 0 };
   }
 
   private findHeader(worksheet: ExcelJS.Worksheet): {
@@ -381,7 +383,8 @@ export class ExcelImportService {
 
       switch (col.kind) {
         case 'code':
-          code = value.toUpperCase();
+          // "HYT - 42" va "HYT-42" bir xil kod
+          code = this.normCode(value);
           break;
         case 'name':
           name = value;
@@ -441,6 +444,8 @@ export class ExcelImportService {
     filePath: string,
     workbook: ExcelJS.Workbook,
     worksheet: ExcelJS.Worksheet,
+    /** Faqat shu Excel qatorlari uchun R2 ga yuklash (mavjud rasmlarni himoya). */
+    onlyRows?: Set<number>,
   ): Promise<Map<number, string>> {
     const byRow = new Map<number, string>();
 
@@ -456,11 +461,14 @@ export class ExcelImportService {
       return byRow;
     }
 
-    this.logger.log(
-      `Excel rasmlar: ${extracted.size} ta qator (original buffer)`,
+    const entries = [...extracted.entries()].filter(
+      ([excelRow]) => !onlyRows || onlyRows.has(excelRow),
     );
 
-    const entries = [...extracted.entries()];
+    this.logger.log(
+      `Excel rasmlar: ${extracted.size} ta topildi, R2 ga ${entries.length} ta yuklanadi (mavjud rasmlar skip)`,
+    );
+
     const CONCURRENCY = 24;
     for (let i = 0; i < entries.length; i += CONCURRENCY) {
       const slice = entries.slice(i, i + CONCURRENCY);
@@ -498,14 +506,120 @@ export class ExcelImportService {
     return byRow;
   }
 
+  /**
+   * Kodni solishtirish: bo‘sh joylar olib tashlanadi.
+   * "HYT - 42" === "HYT-42" === "hyt-42"
+   */
+  private normCode(code: unknown): string {
+    return String(code ?? '')
+      .trim()
+      .toUpperCase()
+      .replace(/[–—]/g, '-')
+      .replace(/\s+/g, '');
+  }
+
+  /** Bo‘shliq/case farqiga qaramay mavjud tovarlarni topadi. */
+  private async findExistingByCodes(codes: string[]): Promise<
+    Array<{
+      _id: Types.ObjectId;
+      code: string;
+      slug: string;
+      images: string[];
+    }>
+  > {
+    if (!codes.length) return [];
+    const keys = [
+      ...new Set(codes.map((c) => this.normCode(c)).filter(Boolean)),
+    ];
+    if (!keys.length) return [];
+
+    type Row = {
+      _id: Types.ObjectId;
+      code: string;
+      slug: string;
+      images: string[];
+    };
+
+    // 1) Aniq moslik (tez)
+    const exact = (await this.productModel
+      .find({ code: { $in: keys } })
+      .select('_id code slug images')
+      .lean()
+      .exec()) as Row[];
+
+    // 2) Bo‘shliq farqi: "HYT - 42" ↔ "HYT-42"
+    const fromAgg = await this.productModel.aggregate<Row>([
+      {
+        $addFields: {
+          codeKey: {
+            $toUpper: {
+              $reduce: {
+                input: {
+                  $split: [{ $ifNull: ['$code', ''] }, ' '],
+                },
+                initialValue: '',
+                in: { $concat: ['$$value', '$$this'] },
+              },
+            },
+          },
+        },
+      },
+      { $match: { codeKey: { $in: keys } } },
+      { $project: { _id: 1, code: 1, slug: 1, images: 1 } },
+    ]);
+
+    const byId = new Map<string, Row>();
+    for (const p of [...exact, ...fromAgg]) {
+      byId.set(String(p._id), p);
+    }
+    return [...byId.values()];
+  }
+
+  /**
+   * Bir xil normCode bo‘yicha dublikatlar: rasmi borini saqlab,
+   * rasmsiz / placeholder nusxalarni o‘chiradi (eski bugdan qolganlar).
+   */
+  private async dedupeOrphanProducts(codes: string[]): Promise<number> {
+    const existing = await this.findExistingByCodes(codes);
+    const groups = new Map<string, typeof existing>();
+    for (const p of existing) {
+      const key = this.normCode(p.code);
+      const list = groups.get(key) ?? [];
+      list.push(p);
+      groups.set(key, list);
+    }
+
+    const toDelete: Types.ObjectId[] = [];
+    for (const [, list] of groups) {
+      if (list.length < 2) continue;
+      const withReal = list.filter((p) =>
+        (p.images ?? []).some((u) => !isPlaceholderProductImage(u)),
+      );
+      const withoutReal = list.filter(
+        (p) =>
+          !(p.images ?? []).some((u) => !isPlaceholderProductImage(u)),
+      );
+      if (!withReal.length || !withoutReal.length) continue;
+      // Rasmi bor kamida 1 ta — rasmsiz dublikatlarni o‘chiramiz
+      for (const p of withoutReal) toDelete.push(p._id);
+    }
+
+    if (!toDelete.length) return 0;
+    const res = await this.productModel
+      .deleteMany({ _id: { $in: toDelete } })
+      .exec();
+    this.logger.warn(
+      `Dublikat rasmsiz tovarlar o‘chirildi: ${res.deletedCount ?? 0}`,
+    );
+    return res.deletedCount ?? 0;
+  }
+
   private async persistRows(
     rows: ParsedRow[],
     seedErrors: string[],
-    options?: { replace?: boolean },
   ): Promise<ExcelImportResult> {
     const errors = [...seedErrors];
     let createdCategories = 0;
-    const forceReplace = Boolean(options?.replace);
 
     const categories = (await this.categoriesService.findAll(false)) as Array<{
       _id: Types.ObjectId | string;
@@ -547,28 +661,30 @@ export class ExcelImportService {
 
     const fallbackId = await ensureCategory('Boshqa');
 
-    // Replace: baza bo‘sh — upsert yo‘q, faqat insert (tezroq)
-    const existingByCode = new Map<string, { id: string; slug: string }>();
-    if (!forceReplace) {
-      const codes = [...new Set(rows.map((r) => r.code))];
-      const existing = await this.productModel
-        .find({ code: { $in: codes } })
-        .select('_id code slug')
-        .lean()
-        .exec();
-      for (const p of existing) {
-        existingByCode.set(String(p.code).toUpperCase(), {
+    const existingByCode = new Map<
+      string,
+      { id: string; slug: string; hasRealImage: boolean }
+    >();
+    const codes = [...new Set(rows.map((r) => r.code))];
+    const existing = await this.findExistingByCodes(codes);
+    for (const p of existing) {
+      const key = this.normCode(p.code);
+      const imgs = Array.isArray(p.images) ? p.images : [];
+      const hasRealImage = imgs.some((u) => !isPlaceholderProductImage(u));
+      const prev = existingByCode.get(key);
+      // Bir xil kodning bir nechta varianti bo‘lsa — rasmi borini tanlaymiz
+      if (!prev || (hasRealImage && !prev.hasRealImage)) {
+        existingByCode.set(key, {
           id: String(p._id),
           slug: p.slug as string,
+          hasRealImage,
         });
       }
     }
 
     const usedSlugs = new Set<string>();
-    if (!forceReplace) {
-      const slugs = await this.productModel.find({}).select('slug').lean().exec();
-      for (const p of slugs) usedSlugs.add(String(p.slug));
-    }
+    const slugs = await this.productModel.find({}).select('slug').lean().exec();
+    for (const p of slugs) usedSlugs.add(String(p.slug));
 
     const allocSlug = (code: string, name: string): string => {
       const root =
@@ -597,25 +713,25 @@ export class ExcelImportService {
           categoryId = await ensureCategory(row.categoryName);
         }
 
-        const prev = forceReplace ? undefined : existingByCode.get(row.code);
+        const prev = existingByCode.get(row.code);
         if (prev) {
-          const $set: Record<string, unknown> = {
-            name: row.name,
-            code: row.code,
-            description: row.name,
-            price: row.price,
-            wholesalePrice: row.wholesalePrice,
-            stock: row.stock,
-            categoryId: new Types.ObjectId(categoryId),
-            specs: row.specs,
-            status: ProductStatus.Active,
-            isActive: true,
-            images: [row.imageUrl],
-          };
+          // images va code UMUMAN yozilmaydi — rasm + eski kod saqlanadi.
           updateOps.push({
             updateOne: {
               filter: { _id: new Types.ObjectId(prev.id) },
-              update: { $set },
+              update: {
+                $set: {
+                  name: row.name,
+                  description: row.name,
+                  price: row.price,
+                  wholesalePrice: row.wholesalePrice,
+                  stock: row.stock,
+                  categoryId: new Types.ObjectId(categoryId),
+                  specs: row.specs,
+                  status: ProductStatus.Active,
+                  isActive: true,
+                },
+              },
             },
           });
           updated += 1;
@@ -645,7 +761,11 @@ export class ExcelImportService {
             isActive: true,
             tags: [],
           });
-          existingByCode.set(row.code, { id: String(id), slug });
+          existingByCode.set(row.code, {
+            id: String(id),
+            slug,
+            hasRealImage: !isPlaceholderProductImage(row.imageUrl),
+          });
           if (!existingDoc) {
             touchedIds.push(String(id));
             touchedSlugs.push(slug);
@@ -658,20 +778,106 @@ export class ExcelImportService {
       }
     }
 
+    // Insert oldidan yana bir marta tekshiruv — dublikat/rasm yo‘qolishini oldini oladi
+    if (docsByCode.size) {
+      const pendingCodes = [...docsByCode.keys()];
+      const again = await this.findExistingByCodes(pendingCodes);
+      for (const p of again) {
+        const key = this.normCode(p.code);
+        const pending = docsByCode.get(key);
+        if (!pending) continue;
+        docsByCode.delete(key);
+        const imgs = Array.isArray(p.images) ? p.images : [];
+        const hasRealImage = imgs.some(
+          (u) => !isPlaceholderProductImage(u),
+        );
+        existingByCode.set(key, {
+          id: String(p._id),
+          slug: p.slug,
+          hasRealImage,
+        });
+        const rowLike = rows.find((r) => r.code === key);
+        if (!rowLike) continue;
+        let categoryId = fallbackId;
+        if (rowLike.categoryName.trim()) {
+          categoryId = await ensureCategory(rowLike.categoryName);
+        }
+        updateOps.push({
+          updateOne: {
+            filter: { _id: p._id },
+            update: {
+              $set: {
+                name: rowLike.name,
+                description: rowLike.name,
+                price: rowLike.price,
+                wholesalePrice: rowLike.wholesalePrice,
+                stock: rowLike.stock,
+                categoryId: new Types.ObjectId(categoryId),
+                specs: rowLike.specs,
+                status: ProductStatus.Active,
+                isActive: true,
+              },
+            },
+          },
+        });
+        updated += 1;
+        touchedIds.push(String(p._id));
+        touchedSlugs.push(p.slug);
+      }
+    }
+
     const docs = [...docsByCode.values()];
-    const created = docs.length;
+    let created = 0;
 
     const CHUNK = 300;
     for (let i = 0; i < docs.length; i += CHUNK) {
       const chunk = docs.slice(i, i + CHUNK);
       try {
         await this.productModel.insertMany(chunk, { ordered: false });
+        created += chunk.length;
       } catch (e) {
-        this.logger.error(`insertMany xato: ${String(e)}`);
-        const writeErr = e as { message?: string };
-        errors.push(
-          `Yozishda xato (qism): ${writeErr.message || 'insertMany failed'}`,
-        );
+        // Unique code conflict → update (images tegilmaydi)
+        const err = e as {
+          message?: string;
+          writeErrors?: Array<{ err?: { op?: Record<string, unknown> } }>;
+          insertedDocs?: unknown[];
+        };
+        const inserted = Array.isArray(err.insertedDocs)
+          ? err.insertedDocs.length
+          : 0;
+        created += inserted;
+        this.logger.warn(`insertMany qisman: ${err.message || String(e)}`);
+
+        for (const doc of chunk) {
+          const code = this.normCode(doc.code);
+          const found = await this.findExistingByCodes([code]);
+          const keep =
+            found.find((p) =>
+              (p.images ?? []).some((u) => !isPlaceholderProductImage(u)),
+            ) ?? found[0];
+          if (!keep) continue;
+          await this.productModel
+            .updateOne(
+              { _id: keep._id },
+              {
+                $set: {
+                  name: doc.name,
+                  description: doc.description,
+                  price: doc.price,
+                  wholesalePrice: doc.wholesalePrice,
+                  stock: doc.stock,
+                  categoryId: doc.categoryId,
+                  specs: doc.specs,
+                  status: doc.status,
+                  isActive: doc.isActive,
+                },
+              },
+            )
+            .exec();
+          updated += 1;
+          touchedIds.push(String(keep._id));
+          touchedSlugs.push(keep.slug);
+        }
       }
     }
 
@@ -687,6 +893,9 @@ export class ExcelImportService {
         );
       }
     }
+
+    // Eski bugdan qolgan rasmsiz dublikatlarni tozalash
+    await this.dedupeOrphanProducts(codes);
 
     await this.invalidateCaches(touchedIds, touchedSlugs);
 

@@ -58,6 +58,7 @@ export class ProductsController {
       query.page ?? 1,
       query.limit ?? 100,
       query.q,
+      query.incomplete,
     );
   }
 

@@ -135,18 +135,58 @@ export class ProductsService {
     return result;
   }
 
-  async findAllAdmin(page = 1, limit = 100, q?: string) {
+  async findAllAdmin(
+    page = 1,
+    limit = 100,
+    q?: string,
+    incomplete?: boolean,
+  ) {
     const safePage = page > 0 ? page : 1;
     const safeLimit = Math.min(Math.max(limit || 100, 1), 100);
-    const filter: Record<string, unknown> = {};
+    const and: Record<string, unknown>[] = [];
+
     const term = q?.trim();
     if (term) {
       const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      filter.$or = [
-        { name: { $regex: escaped, $options: 'i' } },
-        { code: { $regex: escaped, $options: 'i' } },
-      ];
+      and.push({
+        $or: [
+          { name: { $regex: escaped, $options: 'i' } },
+          { code: { $regex: escaped, $options: 'i' } },
+        ],
+      });
     }
+
+    if (incomplete) {
+      and.push({
+        $or: [
+          { name: { $exists: false } },
+          { name: null },
+          { name: '' },
+          { name: { $regex: /^\s*$/ } },
+          { code: { $exists: false } },
+          { code: null },
+          { code: '' },
+          { code: { $regex: /^\s*$/ } },
+          { price: { $exists: false } },
+          { price: null },
+          { price: { $lte: 0 } },
+          { images: { $exists: false } },
+          { images: null },
+          { images: { $size: 0 } },
+          { 'images.0': { $exists: false } },
+          { 'images.0': '' },
+          { 'images.0': null },
+          {
+            'images.0':
+              'https://images.unsplash.com/photo-1556911220-e15b29be8c8f?w=1200&q=80',
+          },
+          { 'images.0': { $regex: 'photo-1556911220-e15b29be8c8f' } },
+        ],
+      });
+    }
+
+    const filter: Record<string, unknown> =
+      and.length > 0 ? { $and: and } : {};
 
     const [items, total] = await Promise.all([
       this.productModel

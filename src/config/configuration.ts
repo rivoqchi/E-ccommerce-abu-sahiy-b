@@ -45,6 +45,9 @@ export default () => ({
 
   telegram: {
     botToken: optionalEnv('TELEGRAM_BOT_TOKEN'),
+    /** polling | webhook — bo'sh bo'lsa: production=webhook, else=polling */
+    botMode: optionalEnv('TELEGRAM_BOT_MODE'),
+    botWebhookSecret: optionalEnv('TELEGRAM_BOT_WEBHOOK_SECRET'),
     gatewayToken: optionalEnv('TELEGRAM_GATEWAY_TOKEN'),
     gatewayUrl: requireEnv('TELEGRAM_GATEWAY_URL').replace(/\/$/, ''),
     gatewayMock: process.env.GATEWAY_MOCK === 'true',

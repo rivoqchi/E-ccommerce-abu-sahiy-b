@@ -23,6 +23,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { SeoModule } from './modules/seo/seo.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { HealthModule } from './health/health.module';
+import { TelegramBotModule } from './modules/telegram-bot/telegram-bot.module';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { HealthModule } from './health/health.module';
     PaymentsModule,
     SeoModule,
     HealthModule,
+    TelegramBotModule,
   ],
   providers: [
     {

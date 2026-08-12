@@ -148,6 +148,91 @@ export class UsersService {
     });
   }
 
+  /**
+   * Bot contact share: find/create user by phone and bind telegramId.
+   * Caller must verify contact.user_id === message.from.id before calling.
+   */
+  async registerFromBotContact(data: {
+    telegramId: string;
+    phone: string;
+    firstName?: string;
+    lastName?: string;
+    username?: string;
+  }): Promise<UserDocument> {
+    const normalized = normalizePhone(data.phone);
+    if (!normalized) {
+      throw new BadRequestException('Invalid phone number');
+    }
+
+    const fullName =
+      [data.firstName, data.lastName].filter(Boolean).join(' ').trim() ||
+      normalized;
+    const username = data.username?.replace(/^@/, '') || undefined;
+
+    const byTelegram = await this.findByTelegramId(data.telegramId);
+    if (byTelegram) {
+      const user = await this.linkPhoneFromTelegram(
+        byTelegram._id.toString(),
+        normalized,
+        data.telegramId,
+        { firstName: data.firstName, lastName: data.lastName },
+      );
+
+      let dirty = false;
+      if (username && user.username !== username) {
+        user.username = username;
+        dirty = true;
+      }
+      if (data.firstName && user.firstName !== data.firstName) {
+        user.firstName = data.firstName;
+        dirty = true;
+      }
+      if (data.lastName && user.lastName !== data.lastName) {
+        user.lastName = data.lastName;
+        dirty = true;
+      }
+      if (fullName && user.fullName !== fullName) {
+        user.fullName = fullName;
+        dirty = true;
+      }
+      if (dirty) await user.save();
+
+      return this.ensureSuperAdmin(user);
+    }
+
+    const byPhone = await this.findByPhone(normalized);
+    if (byPhone) {
+      if (byPhone.telegramId && byPhone.telegramId !== data.telegramId) {
+        throw new ConflictException(
+          'Phone already linked to another Telegram account',
+        );
+      }
+
+      byPhone.telegramId = data.telegramId;
+      if (username) byPhone.username = username;
+      if (data.firstName) byPhone.firstName = data.firstName;
+      if (data.lastName) byPhone.lastName = data.lastName;
+      if (fullName) byPhone.fullName = fullName;
+      await byPhone.save();
+
+      return this.ensureSuperAdmin(byPhone);
+    }
+
+    const created = await this.userModel.create({
+      phone: normalized,
+      telegramId: data.telegramId,
+      email: `guest.${normalized.replace(/\D/g, '')}@checkout.local`,
+      fullName,
+      firstName: data.firstName?.trim() || undefined,
+      lastName: data.lastName?.trim() || undefined,
+      username,
+      role: Role.Customer,
+      priceTier: PriceTier.Retail,
+    });
+
+    return this.ensureSuperAdmin(created);
+  }
+
   async linkTelegramId(
     userId: string,
     telegramId: string,

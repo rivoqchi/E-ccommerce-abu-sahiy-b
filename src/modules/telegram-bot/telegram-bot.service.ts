@@ -219,14 +219,21 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
 
   private beginPolling(bot: Bot) {
     this.logger.log('Telegram getUpdates loop ishga tushmoqda…');
-    void bot
-      .start({
-        drop_pending_updates: true,
-        onStart: (info) => {
-          this.logger.log(`Telegram bot ready (@${info.username})`);
-        },
-      })
-      .catch((err: unknown) => {
+    void (async () => {
+      try {
+        // Oldingi loop hali yopilmagan bo‘lsa — o‘zimiz bilan 409 chiqadi
+        try {
+          await bot.stop();
+        } catch {
+          /* already stopped */
+        }
+        await bot.start({
+          drop_pending_updates: true,
+          onStart: (info) => {
+            this.logger.log(`Telegram bot ready (@${info.username})`);
+          },
+        });
+      } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('409') || msg.includes('Conflict')) {
           this.pollingRetries += 1;
@@ -252,7 +259,8 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Telegram polling stopped: ${msg}`);
         void this.releasePollingLock();
         this.mode = 'off';
-      });
+      }
+    })();
   }
 
   private async acquirePollingLock(): Promise<boolean> {
@@ -412,6 +420,20 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         username: from.username,
       });
     } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      // E11000: user allaqachon bor — ro‘yxatdan o‘tgan deb hisoblaymiz
+      if (detail.includes('E11000') || detail.includes('duplicate key')) {
+        const existing = await this.usersService.findByTelegramId(
+          String(from.id),
+        );
+        if (existing?.phone) {
+          this.logger.warn(
+            `registerFromBotContact duplicate ignored telegramId=${from.id}`,
+          );
+          await this.replyWithMenu(ctx, texts.registered, true);
+          return;
+        }
+      }
       const status =
         err instanceof HttpException ? err.getStatus() : undefined;
       if (status === 409) {
@@ -420,7 +442,6 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         });
         return;
       }
-      const detail = err instanceof Error ? err.message : String(err);
       this.logger.error(
         `registerFromBotContact failed telegramId=${from.id} phone=${contact.phone_number}: ${detail}`,
         err instanceof Error ? err.stack : undefined,
@@ -434,9 +455,6 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // Ro‘yxatdan o‘tish muvaffaqiyatli — menyu yuborish alohida (Telegram
-    // localhost/http web_app/url ni rad etadi; shu yiqilishi registerFailed
-    // ko‘rinmasligi kerak).
     await this.replyWithMenu(ctx, texts.registered, true);
   }
 
@@ -630,7 +648,8 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      await ctx.reply(`🌐 Sayt: ${this.frontendUrl}/login`);
+      const site = this.miniAppUrl || this.frontendUrl;
+      await ctx.reply(`🌐 Sayt: ${site}/login`);
     }
   }
 

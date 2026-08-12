@@ -63,6 +63,8 @@ export default () => ({
     botUsername: optionalEnv('TELEGRAM_BOT_USERNAME'),
     /** Telegram Mini App HTTPS URL (local FRONTEND_URL emas) */
     miniAppUrl: optionalEnv('TELEGRAM_MINI_APP_URL').replace(/\/$/, ''),
+    /** Open Web login link base (bo'sh = FRONTEND_URL). Vercel uchun prod API bilan bir xil bo'lsin. */
+    openWebUrl: optionalEnv('TELEGRAM_OPEN_WEB_URL').replace(/\/$/, ''),
   },
 
   /** Cloudflare R2 (S3-compatible) media storage */

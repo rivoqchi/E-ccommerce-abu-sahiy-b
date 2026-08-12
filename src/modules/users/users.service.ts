@@ -54,7 +54,15 @@ export class UsersService {
   }
 
   async findByTelegramId(telegramId: string): Promise<UserDocument | null> {
-    return this.userModel.findOne({ telegramId }).exec();
+    const id = String(telegramId).trim();
+    if (!id) return null;
+    const asNum = Number(id);
+    // string + (legacy) number saqlangan telegramId
+    const filter =
+      Number.isFinite(asNum) && String(asNum) === id
+        ? { $or: [{ telegramId: id }, { telegramId: String(asNum) }] }
+        : { telegramId: id };
+    return this.userModel.findOne(filter).exec();
   }
 
   async findOrCreateByPhone(
@@ -165,6 +173,7 @@ export class UsersService {
     lastName?: string;
     username?: string;
   }): Promise<UserDocument> {
+    const telegramId = String(data.telegramId).trim();
     const normalized = normalizePhone(data.phone);
     if (!normalized || normalized.replace(/\D/g, '').length < 8) {
       throw new BadRequestException('Invalid phone number');
@@ -202,8 +211,8 @@ export class UsersService {
         user.fullName = fullName;
         dirty = true;
       }
-      if (user.telegramId !== data.telegramId) {
-        user.telegramId = data.telegramId;
+      if (String(user.telegramId ?? '') !== telegramId) {
+        user.telegramId = telegramId;
         dirty = true;
       }
       if (!user.isActive) {
@@ -214,8 +223,18 @@ export class UsersService {
         try {
           await user.save();
         } catch (err) {
-          // username unique conflict — profilning qolgan maydonlarini saqlaymiz
-          if (isDuplicateKeyError(err) && username) {
+          if (!isDuplicateKeyError(err)) throw err;
+
+          // telegramId/phone/email conflict — mavjud yozuvni qaytaramiz
+          const owner =
+            (await this.findByTelegramId(telegramId)) ||
+            (await this.findByPhoneOrGuestEmail(normalized, guestEmail));
+          if (owner) {
+            return this.ensureSuperAdmin(owner);
+          }
+
+          // username unique (eski index) — username ni tashlab qayta
+          if (username) {
             user.username = undefined;
             await user.save();
           } else {
@@ -226,86 +245,107 @@ export class UsersService {
       return this.ensureSuperAdmin(user);
     };
 
-    const byTelegram = await this.findByTelegramId(data.telegramId);
-    if (byTelegram) {
-      const samePhone =
-        byTelegram.phone &&
-        phonesMatch(byTelegram.phone, normalized);
+    try {
+      const byTelegram = await this.findByTelegramId(telegramId);
+      if (byTelegram) {
+        const samePhone =
+          byTelegram.phone && phonesMatch(byTelegram.phone, normalized);
 
-      if (samePhone) {
-        return applyProfile(byTelegram);
+        if (samePhone) {
+          return applyProfile(byTelegram);
+        }
+
+        try {
+          const linked = await this.linkPhoneFromTelegram(
+            byTelegram._id.toString(),
+            normalized,
+            telegramId,
+            { firstName: data.firstName, lastName: data.lastName },
+          );
+          return applyProfile(linked);
+        } catch (err) {
+          if (err instanceof ConflictException) throw err;
+          const byPhone = await this.findByPhoneOrGuestEmail(
+            normalized,
+            guestEmail,
+          );
+          if (
+            byPhone &&
+            (!byPhone.telegramId ||
+              String(byPhone.telegramId) === telegramId)
+          ) {
+            return applyProfile(byPhone);
+          }
+          // Allaqachon shu telegramId bilan user bor — muvaffaqiyat
+          const again = await this.findByTelegramId(telegramId);
+          if (again) return applyProfile(again);
+          throw err;
+        }
+      }
+
+      const existing = await this.findByPhoneOrGuestEmail(
+        normalized,
+        guestEmail,
+      );
+      if (existing) {
+        if (
+          existing.telegramId &&
+          String(existing.telegramId) !== telegramId
+        ) {
+          throw new ConflictException(
+            'Phone already linked to another Telegram account',
+          );
+        }
+        return applyProfile(existing);
       }
 
       try {
-        const linked = await this.linkPhoneFromTelegram(
-          byTelegram._id.toString(),
-          normalized,
-          data.telegramId,
-          { firstName: data.firstName, lastName: data.lastName },
-        );
-        return applyProfile(linked);
+        const created = await this.userModel.create({
+          phone: normalized,
+          telegramId,
+          email: guestEmail,
+          fullName,
+          firstName: data.firstName?.trim() || undefined,
+          lastName: data.lastName?.trim() || undefined,
+          username,
+          role: Role.Customer,
+          priceTier: PriceTier.Retail,
+        });
+        return this.ensureSuperAdmin(created);
       } catch (err) {
-        if (err instanceof ConflictException) throw err;
-        // Recover: phone account may already exist — attach if free
-        const byPhone = await this.findByPhoneOrGuestEmail(
+        if (!isDuplicateKeyError(err)) throw err;
+
+        const raced = await this.findByPhoneOrGuestEmail(
           normalized,
           guestEmail,
         );
         if (
-          byPhone &&
-          (!byPhone.telegramId || byPhone.telegramId === data.telegramId)
+          raced &&
+          (!raced.telegramId || String(raced.telegramId) === telegramId)
         ) {
-          return applyProfile(byPhone);
+          return applyProfile(raced);
         }
-        throw err;
-      }
-    }
 
-    const existing = await this.findByPhoneOrGuestEmail(
-      normalized,
-      guestEmail,
-    );
-    if (existing) {
-      if (existing.telegramId && existing.telegramId !== data.telegramId) {
+        const byTg = await this.findByTelegramId(telegramId);
+        if (byTg) {
+          return applyProfile(byTg);
+        }
+
         throw new ConflictException(
           'Phone already linked to another Telegram account',
         );
       }
-      return applyProfile(existing);
-    }
-
-    try {
-      const created = await this.userModel.create({
-        phone: normalized,
-        telegramId: data.telegramId,
-        email: guestEmail,
-        fullName,
-        firstName: data.firstName?.trim() || undefined,
-        lastName: data.lastName?.trim() || undefined,
-        username,
-        role: Role.Customer,
-        priceTier: PriceTier.Retail,
-      });
-      return this.ensureSuperAdmin(created);
     } catch (err) {
-      if (!isDuplicateKeyError(err)) throw err;
-
-      const raced = await this.findByPhoneOrGuestEmail(normalized, guestEmail);
-      if (
-        raced &&
-        (!raced.telegramId || raced.telegramId === data.telegramId)
-      ) {
-        return applyProfile(raced);
+      // Oxirgi himoya: E11000 telegramId — user allaqachon bor
+      if (isDuplicateKeyError(err)) {
+        const owner =
+          (await this.findByTelegramId(telegramId)) ||
+          (await this.findByPhoneOrGuestEmail(normalized, guestEmail));
+        if (owner) {
+          return this.ensureSuperAdmin(owner);
+        }
       }
-
-      const byTg = await this.findByTelegramId(data.telegramId);
-      if (byTg) {
-        return applyProfile(byTg);
-      }
-
-      throw new ConflictException(
-        'Phone already linked to another Telegram account',
-      );
+      throw err;
     }
   }
 
@@ -395,6 +435,15 @@ export class UsersService {
       );
     }
 
+    // Avval eski userdan telegramId ni bo‘shatamiz (unique index), keyin phone
+    // akkauntga biriktiramiz — aks holda E11000 duplicate key chiqadi.
+    await this.userModel
+      .findByIdAndUpdate(userId, {
+        $unset: { telegramId: 1, refreshTokenHash: 1 },
+        $set: { isActive: false },
+      })
+      .exec();
+
     // Merge telegram profile into the existing phone account
     byPhone.telegramId = telegramId;
     if (current.username && !byPhone.username) {
@@ -432,14 +481,6 @@ export class UsersService {
       .trim();
     if (mergedName) byPhone.fullName = mergedName;
     await byPhone.save();
-
-    // Free unique telegramId on the duplicate Mini App-only user
-    await this.userModel
-      .findByIdAndUpdate(userId, {
-        $unset: { telegramId: 1, refreshTokenHash: 1 },
-        $set: { isActive: false },
-      })
-      .exec();
 
     return byPhone;
   }
@@ -715,10 +756,13 @@ function guestEmailForPhone(phone: string): string {
 }
 
 function isDuplicateKeyError(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code?: number }).code === 11000
-  );
+  if (!err || typeof err !== 'object') return false;
+  const e = err as {
+    code?: number;
+    message?: string;
+    cause?: { code?: number; message?: string };
+  };
+  if (e.code === 11000 || e.cause?.code === 11000) return true;
+  const msg = `${e.message ?? ''} ${e.cause?.message ?? ''}`;
+  return msg.includes('E11000');
 }

@@ -379,9 +379,14 @@ export class AuthService {
       this.configService.get<number>('telegram.otpTtlSeconds') ?? 600;
     await this.redisService.setJson(`bot-web-login:${token}`, payload, ttl);
 
-    const frontend = this.configService
-      .getOrThrow<string>('frontendUrl')
-      .replace(/\/$/, '');
+    // Open Web link shu backend (Redis) bilan bir xil frontendga ketishi kerak.
+    // Vercel → onrender API; lokal bot → lokal Redis — shuning uchun lokalda
+    // FRONTEND_URL (localhost), prod da TELEGRAM_OPEN_WEB_URL / Mini App URL.
+    const openWeb =
+      this.configService.get<string>('telegram.openWebUrl')?.trim() ||
+      this.configService.get<string>('frontendUrl') ||
+      '';
+    const frontend = openWeb.replace(/\/$/, '');
     return `${frontend}/login?token=${token}`;
   }
 

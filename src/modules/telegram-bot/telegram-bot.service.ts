@@ -102,6 +102,11 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      if (mode === 'off') {
+        this.mode = 'off';
+        return;
+      }
+
       this.bot = new Bot(token, {
         client: {
           // Default juda uzoq — tarmoq sekin bo'lsa boot tiqilib qolardi

@@ -31,9 +31,13 @@ async function bootstrap() {
     prefix: '/uploads/',
   });
 
+  const isProd = config.get<string>('nodeEnv') === 'production';
   app.use(
     helmet({
       crossOriginResourcePolicy: { policy: 'cross-origin' },
+      // API JSON javobiga document CSP/HSTS qo'yilmasin (upgrade-insecure-requests)
+      contentSecurityPolicy: false,
+      strictTransportSecurity: isProd ? undefined : false,
     }),
   );
   app.use(compression());

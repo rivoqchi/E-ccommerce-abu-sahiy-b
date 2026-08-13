@@ -2,6 +2,7 @@ import {
   Controller,
   Headers,
   HttpCode,
+  Logger,
   Post,
   Req,
   UnauthorizedException,
@@ -14,6 +15,8 @@ import { TelegramBotService } from './telegram-bot.service';
 
 @Controller('telegram')
 export class TelegramBotController {
+  private readonly logger = new Logger(TelegramBotController.name);
+
   constructor(private readonly telegramBotService: TelegramBotService) {}
 
   @Public()
@@ -25,6 +28,7 @@ export class TelegramBotController {
     @Headers('x-telegram-bot-api-secret-token') secretHeader?: string,
   ) {
     if (!this.telegramBotService.isReady()) {
+      this.logger.warn('Webhook update ignored: Telegram bot not ready');
       return { ok: true };
     }
 

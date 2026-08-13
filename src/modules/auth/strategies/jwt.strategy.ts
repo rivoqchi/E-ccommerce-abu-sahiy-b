@@ -1,5 +1,6 @@
 import {
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -30,7 +31,16 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   async validate(payload: JwtPayload): Promise<AuthUser> {
-    const user = await this.usersService.findById(payload.sub);
+    let user;
+    try {
+      user = await this.usersService.findById(payload.sub);
+    } catch (err) {
+      // Lokal JWT / boshqa DB dagi user Atlas'da yo'q — 404 emas, 401
+      if (err instanceof NotFoundException) {
+        throw new UnauthorizedException('Invalid token');
+      }
+      throw err;
+    }
     if (!user.isActive) {
       throw new UnauthorizedException('Account is disabled');
     }

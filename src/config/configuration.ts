@@ -12,16 +12,58 @@ function optionalEnv(name: string, fallback = ''): string {
   return process.env[name]?.trim() || fallback;
 }
 
-export default () => ({
+function stripSlash(url: string): string {
+  return url.replace(/\/$/, '');
+}
+
+function isLocalHostUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host === 'localhost' || host === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
+/** Render'da APP_URL localhost qolsa ham webhook to'g'ri URL ga yozilsin */
+function resolveAppUrl(): string {
+  const explicit = stripSlash(requireEnv('APP_URL'));
+  const render = stripSlash(optionalEnv('RENDER_EXTERNAL_URL'));
+  const nodeEnv = optionalEnv('NODE_ENV', 'development').toLowerCase();
+  if (nodeEnv === 'production') {
+    if (render) {
+      return render.startsWith('http') ? render : `https://${render}`;
+    }
+    if (!isLocalHostUrl(explicit)) return explicit;
+  }
+  return explicit;
+}
+
+function resolveOpenWebUrl(frontendUrl: string, miniAppUrl: string): string {
+  const explicit = stripSlash(optionalEnv('TELEGRAM_OPEN_WEB_URL'));
+  const nodeEnv = optionalEnv('NODE_ENV', 'development').toLowerCase();
+  if (explicit && !(nodeEnv === 'production' && isLocalHostUrl(explicit))) {
+    return explicit;
+  }
+  if (nodeEnv === 'production' && miniAppUrl && !isLocalHostUrl(miniAppUrl)) {
+    return miniAppUrl;
+  }
+  return frontendUrl;
+}
+
+export default () => {
+  const frontendUrl = stripSlash(requireEnv('FRONTEND_URL'));
+  const miniAppUrl = stripSlash(optionalEnv('TELEGRAM_MINI_APP_URL'));
+  return {
   nodeEnv: optionalEnv('NODE_ENV', 'development'),
   port: parseInt(optionalEnv('PORT', '4000'), 10),
   apiPrefix: optionalEnv('API_PREFIX', 'api/v1'),
 
   /** API o'zining to'liq base URL i (masalan http://localhost:4000) */
-  appUrl: requireEnv('APP_URL').replace(/\/$/, ''),
+  appUrl: resolveAppUrl(),
 
   /** Asosiy frontend URL (CORS va redirectlar uchun) */
-  frontendUrl: requireEnv('FRONTEND_URL').replace(/\/$/, ''),
+  frontendUrl,
 
   mongodbUri: requireEnv('MONGODB_URI'),
   redisUrl: requireEnv('REDIS_URL'),
@@ -62,9 +104,9 @@ export default () => ({
     superAdminPhone: optionalEnv('SUPER_ADMIN_PHONE'),
     botUsername: optionalEnv('TELEGRAM_BOT_USERNAME'),
     /** Telegram Mini App HTTPS URL (local FRONTEND_URL emas) */
-    miniAppUrl: optionalEnv('TELEGRAM_MINI_APP_URL').replace(/\/$/, ''),
-    /** Open Web login link base (bo'sh = FRONTEND_URL). Vercel uchun prod API bilan bir xil bo'lsin. */
-    openWebUrl: optionalEnv('TELEGRAM_OPEN_WEB_URL').replace(/\/$/, ''),
+    miniAppUrl,
+    /** Open Web login link — production'da localhost bo'lmasin */
+    openWebUrl: resolveOpenWebUrl(frontendUrl, miniAppUrl),
   },
 
   /** Cloudflare R2 (S3-compatible) media storage */
@@ -76,4 +118,5 @@ export default () => ({
     endpoint: requireEnv('R2_ENDPOINT').replace(/\/$/, ''),
     publicUrl: requireEnv('R2_PUBLIC_URL').replace(/\/$/, ''),
   },
-});
+  };
+};

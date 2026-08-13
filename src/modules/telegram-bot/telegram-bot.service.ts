@@ -88,12 +88,15 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       const mode = this.resolveMode();
       this.mode = mode;
 
-      // Mini App Vercel'da, verify Render'da. Lokal polling kodni lokal Redis'ga
-      // yozadi — Mini App 401 beradi. Shuning uchun devda getUpdates ni Render'ga qoldiramiz.
-      if (mode === 'off' || this.shouldYieldTelegramToProduction()) {
+      // Faqat lokal API: Mini App Vercel'da bo'lsa getUpdates ni Render'ga qoldiramiz.
+      // Render o'zi hech qachon skip qilmasin — aks holda /start javobsiz qoladi.
+      if (
+        !this.isHostedOnRender() &&
+        (mode === 'off' || this.shouldYieldTelegramToProduction())
+      ) {
         this.logger.warn(
-          `Telegram polling skip: Mini App ${this.miniAppUrl}. ` +
-            `Kod yuborish Render botida ishlaydi. Lokal getUpdates Mini App loginni 401 qiladi.`,
+          `Telegram polling skip (local): Mini App ${this.miniAppUrl}. ` +
+            `Bot Render webhook orqali ishlaydi.`,
         );
         this.mode = 'off';
         return;
@@ -365,16 +368,29 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     await this.bot.handleUpdate(update);
   }
 
+  private isHostedOnRender(): boolean {
+    if (process.env.RENDER === 'true' || process.env.RENDER_EXTERNAL_URL) {
+      return true;
+    }
+    const appUrl = this.configService.get<string>('appUrl') || '';
+    return appUrl.includes('onrender.com');
+  }
+
   private resolveMode(): 'polling' | 'webhook' | 'off' {
     const configured = this.configService
       .get<string>('telegram.botMode')
       ?.trim()
       .toLowerCase();
+
+    // Render: TELEGRAM_BOT_MODE=off/polling bo'lsa ham webhook — /start ishlashi uchun
+    if (this.isHostedOnRender()) {
+      return 'webhook';
+    }
+
     if (configured === 'off') return 'off';
 
     const nodeEnv =
       this.configService.get<string>('nodeEnv')?.toLowerCase() ?? 'development';
-    // Render/production: polling 409 (lokal yoki 2-instance). Faqat webhook.
     if (nodeEnv === 'production') {
       return 'webhook';
     }
@@ -384,19 +400,17 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     return 'polling';
   }
 
-  /** Mini App prod URL bo'lsa lokal polling Render webhook/OTP ni buzadi */
+  /** Lokal mashina polling qilmasin — Mini App Render API ni ishlatadi */
   private shouldYieldTelegramToProduction(): boolean {
-    const nodeEnv =
-      this.configService.get<string>('nodeEnv')?.toLowerCase() ?? 'development';
-    if (nodeEnv === 'production') return false;
-    if (this.mode === 'off') return true;
-    if (!this.isHttpsUrl(this.miniAppUrl)) return false;
+    if (this.isHostedOnRender()) return false;
+    const appUrl = this.configService.get<string>('appUrl') || '';
     try {
-      const host = new URL(this.miniAppUrl).hostname;
-      return host !== 'localhost' && host !== '127.0.0.1';
+      const host = new URL(appUrl).hostname;
+      if (host !== 'localhost' && host !== '127.0.0.1') return false;
     } catch {
       return false;
     }
+    return this.isHttpsUrl(this.miniAppUrl);
   }
 
   private registerHandlers(bot: Bot) {

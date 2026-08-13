@@ -2,7 +2,6 @@ import {
   Controller,
   Headers,
   HttpCode,
-  Logger,
   Post,
   Req,
   UnauthorizedException,
@@ -15,8 +14,6 @@ import { TelegramBotService } from './telegram-bot.service';
 
 @Controller('telegram')
 export class TelegramBotController {
-  private readonly logger = new Logger(TelegramBotController.name);
-
   constructor(private readonly telegramBotService: TelegramBotService) {}
 
   @Public()
@@ -27,11 +24,6 @@ export class TelegramBotController {
     @Req() req: Request,
     @Headers('x-telegram-bot-api-secret-token') secretHeader?: string,
   ) {
-    if (!this.telegramBotService.isReady()) {
-      this.logger.warn('Webhook update ignored: Telegram bot not ready');
-      return { ok: true };
-    }
-
     const expected = this.telegramBotService.getWebhookSecret();
     if (expected && secretHeader !== expected) {
       throw new UnauthorizedException('Invalid webhook secret');

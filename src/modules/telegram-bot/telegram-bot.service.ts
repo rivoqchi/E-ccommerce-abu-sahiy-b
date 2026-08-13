@@ -40,6 +40,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   private pollingRetries = 0;
   private bootstrapping = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingUpdates: Update[] = [];
 
   constructor(
     private readonly configService: ConfigService,
@@ -167,11 +168,17 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
               .get<string>('telegram.botWebhookSecret')
               ?.trim() || undefined;
           const webhookUrl = `${appUrl}/${prefix}/telegram/webhook`;
+          await bot.init();
+          this.logger.log(
+            `Telegram init ok (@${bot.botInfo.username ?? 'unknown'})`,
+          );
           await bot.api.setWebhook(webhookUrl, {
             secret_token: secret,
             drop_pending_updates: false,
           });
+          this.mode = 'webhook';
           this.logger.log(`Telegram bot webhook: ${webhookUrl}`);
+          await this.flushPendingUpdates();
         } else {
           const locked = await this.acquirePollingLock();
           if (!locked) {
@@ -359,7 +366,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   }
 
   isReady(): boolean {
-    return this.bot != null;
+    return this.bot != null && Boolean(this.bot.botInfo);
   }
 
   getWebhookSecret(): string {
@@ -369,8 +376,34 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   }
 
   async handleUpdate(update: Update): Promise<void> {
-    if (!this.bot) return;
-    await this.bot.handleUpdate(update);
+    if (!this.bot?.botInfo) {
+      if (this.pendingUpdates.length < 100) {
+        this.pendingUpdates.push(update);
+      }
+      return;
+    }
+    try {
+      await this.bot.handleUpdate(update);
+    } catch (err) {
+      this.logger.error(
+        `Webhook handleUpdate: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private async flushPendingUpdates() {
+    const bot = this.bot;
+    if (!bot?.botInfo) return;
+    const queued = this.pendingUpdates.splice(0);
+    for (const update of queued) {
+      try {
+        await bot.handleUpdate(update);
+      } catch (err) {
+        this.logger.warn(
+          `pending webhook: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   private isHostedOnRender(): boolean {

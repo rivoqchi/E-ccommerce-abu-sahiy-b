@@ -396,7 +396,9 @@ export class AuthService {
     if (!payload?.userId) {
       throw new UnauthorizedException('Link muddati tugagan yoki noto‘g‘ri');
     }
-    await this.redisService.del(key);
+    // Bir martalik o‘chirish Telegram preview / React remount / retry ni
+    // «Link muddati tugagan» qilib yuboradi. TTL ichida qayta ishlasin.
+    await this.redisService.expireAtMost(key, 120);
 
     let user = await this.usersService.findById(payload.userId);
     user = await this.usersService.ensureSuperAdmin(user);

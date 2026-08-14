@@ -8,7 +8,7 @@ export const texts = {
   welcomeNeedPhone:
     'Assalomu alaykum! 👋\n\nSaytdan ro‘yxatdan o‘tish uchun telefon raqamingizni yuboring.',
   welcomeReady:
-    'Assalomu alaykum! 👋\n\nQuyidagi menyudan kerakli bo‘limni tanlang.\n\n• Open Web — sayt avtomatik ochiladi (kod shart emas)\n• Kod yuborish — web /login uchun 6 xonali kod',
+    'Assalomu alaykum! 👋\n\nQuyidagi menyudan kerakli bo‘limni tanlang.\n\n• Open Web — sayt ochiladi va avtomatik kirasiz (kod shart emas)\n• Kod yuborish — web /login uchun 6 xonali kod',
   registered:
     'Rahmat! Raqamingiz qabul qilindi. Siz saytdan ro‘yxatdan o‘tdingiz.',
   contactRejected:

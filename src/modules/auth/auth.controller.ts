@@ -1,4 +1,5 @@
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -51,8 +52,9 @@ export class AuthController {
     return this.authService.verifyBotLoginCode(dto.code);
   }
 
-  /** Open Web one-time token → JWT */
+  /** Open Web token → JWT (TTL ichida qayta urinishga ruxsat) */
   @Public()
+  @SkipThrottle()
   @Post('bot-web-login')
   botWebLogin(@Body() dto: BotWebLoginDto) {
     return this.authService.consumeBotWebLoginToken(dto.token);

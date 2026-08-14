@@ -113,6 +113,22 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** Shorten TTL only if current TTL is longer than maxTtlSeconds. */
+  async expireAtMost(key: string, maxTtlSeconds: number): Promise<void> {
+    if (maxTtlSeconds <= 0) return;
+    try {
+      const ttl = await this.client.ttl(key);
+      if (ttl === -2) return;
+      if (ttl < 0 || ttl > maxTtlSeconds) {
+        await this.client.expire(key, maxTtlSeconds);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Redis expireAtMost failed for ${key}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   async del(...keys: string[]): Promise<void> {
     if (!keys.length) return;
     try {

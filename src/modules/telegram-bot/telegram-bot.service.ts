@@ -727,7 +727,13 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   private async sendOpenWebLinkFallback(ctx: Context, telegramId: string) {
     try {
       const url = await this.authService.createBotWebLoginUrl(telegramId);
-      await ctx.reply(`🌐 Open Web (avtomatik kirish):\n${url}`);
+      await ctx.reply(
+        '🌐 Sayt avtomatik ochiladi — tugmani bosing. Kod kiritish shart emas.',
+        {
+          reply_markup: new InlineKeyboard().url('Saytga kirish', url),
+          link_preview_options: { is_disabled: true },
+        },
+      );
     } catch (err) {
       this.logger.warn(
         `sendOpenWebLinkFallback: ${

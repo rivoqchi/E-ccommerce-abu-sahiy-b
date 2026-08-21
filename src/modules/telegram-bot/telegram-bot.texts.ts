@@ -6,7 +6,9 @@ export const BTN_MINI_APP = 'Mini App';
 
 export const texts = {
   welcomeNeedPhone:
-    'Assalomu alaykum! 👋\n\nSaytdan ro‘yxatdan o‘tish uchun telefon raqamingizni yuboring.',
+    'Assalomu alaykum! 👋\n\nRo‘yxatdan o‘tish Sami bot orqali. Telefon raqamingizni yuboring — pastdagi «Raqamni yuborish» tugmasini bosing.',
+  registerGuideCaption:
+    '1) Pastdagi «📱 Raqamni yuborish» tugmasini bosing.\n2) Keyin ochilgan oynada «OK» ni bosing.',
   welcomeReady:
     'Assalomu alaykum! 👋\n\nQuyidagi menyudan kerakli bo‘limni tanlang.\n\n• Open Web — sayt ochiladi va avtomatik kirasiz (kod shart emas)\n• Kod yuborish — web /login uchun 6 xonali kod',
   registered:

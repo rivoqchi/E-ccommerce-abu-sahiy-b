@@ -6,7 +6,9 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Bot, InlineKeyboard, Keyboard, Context } from 'grammy';
+import { existsSync } from 'fs';
+import { join } from 'path';
+import { Bot, InlineKeyboard, Keyboard, Context, InputFile } from 'grammy';
 import type { Update } from 'grammy/types';
 import { randomBytes } from 'crypto';
 import { UsersService } from '../users/users.service';
@@ -478,6 +480,50 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     if (user?.phone) {
       await this.replyWithMenu(ctx, texts.welcomeReady, true);
       return;
+    }
+
+    await this.sendRegisterGuide(ctx);
+  }
+
+  private registerGuidePhotoPaths(): string[] {
+    const names = ['register-step-1.png', 'register-step-2.png'] as const;
+    const dirs = [
+      join(__dirname, 'assets'),
+      join(process.cwd(), 'src', 'modules', 'telegram-bot', 'assets'),
+      join(process.cwd(), 'dist', 'modules', 'telegram-bot', 'assets'),
+    ];
+    const dir =
+      dirs.find((candidate) =>
+        names.every((name) => existsSync(join(candidate, name))),
+      ) ?? dirs[0];
+    return names.map((name) => join(dir, name));
+  }
+
+  /** /start: yo‘riqnoma rasmlari + telefon so‘rash tugmasi */
+  private async sendRegisterGuide(ctx: Context) {
+    const paths = this.registerGuidePhotoPaths();
+    if (paths.every((file) => existsSync(file))) {
+      try {
+        await ctx.replyWithMediaGroup([
+          {
+            type: 'photo',
+            media: new InputFile(paths[0]),
+            caption: texts.registerGuideCaption,
+          },
+          {
+            type: 'photo',
+            media: new InputFile(paths[1]),
+          },
+        ]);
+      } catch (err) {
+        this.logger.warn(
+          `register guide photos: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    } else {
+      this.logger.warn(`register guide photos missing: ${paths.join(', ')}`);
     }
 
     await ctx.reply(texts.welcomeNeedPhone, {

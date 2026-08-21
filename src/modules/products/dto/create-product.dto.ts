@@ -33,6 +33,11 @@ export class CreateProductDto {
   @MinLength(1)
   code!: string;
 
+  /** Shtrix-kod (Smartup ombor sync) */
+  @IsOptional()
+  @IsString()
+  barcode?: string;
+
   @IsOptional()
   @IsString()
   slug?: string;

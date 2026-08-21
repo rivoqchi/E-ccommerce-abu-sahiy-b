@@ -31,6 +31,16 @@ export class InventoryService {
     return product;
   }
 
+  /**
+   * Smartup/ERP sync: faqat `stock` maydonini yozadi.
+   * name, price, images, specs va boshqa maydonlarga tegilmaydi.
+   */
+  async overwriteStockOnly(productId: string, stock: number) {
+    const product = await this.productsService.setStockOnly(productId, stock);
+    this.emitStock(product);
+    return product;
+  }
+
   private emitStock(product: {
     _id: { toString(): string };
     stock: number;

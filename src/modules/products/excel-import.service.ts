@@ -41,6 +41,7 @@ type ColumnKind =
   | 'price'
   | 'wholesale'
   | 'stock'
+  | 'barcode'
   | 'skip'
   | 'spec';
 
@@ -65,6 +66,7 @@ type ParsedRow = {
   price: number;
   wholesalePrice: number;
   stock: number;
+  barcode?: string;
   specs: Array<{ label: string; value: string }>;
   imageUrl: string;
 };
@@ -345,7 +347,21 @@ export class ExcelImportService {
       return { kind: 'stock', label: header.trim() };
     }
 
-    // Packaging / barcode / manufacturer → specs
+    // Shtrix-kod → barcode (Smartup sync)
+    if (
+      h === 'barcode' ||
+      h === 'штрих-код' ||
+      h === 'штрихкод' ||
+      h === 'штрих код' ||
+      h === 'shtrix' ||
+      h === 'shtrix-kod' ||
+      h.includes('штрих') ||
+      h.includes('barcode')
+    ) {
+      return { kind: 'barcode', label: header.trim() };
+    }
+
+    // Packaging / manufacturer → specs
     return { kind: 'spec', label: header.trim() || h };
   }
 
@@ -362,6 +378,7 @@ export class ExcelImportService {
     let wholesalePrice = 0;
     let hasWholesale = false;
     let stock: number | null = null;
+    let barcode: string | undefined;
     const specs: Array<{ label: string; value: string }> = [];
 
     for (let c = 0; c < columns.length; c++) {
@@ -408,6 +425,11 @@ export class ExcelImportService {
           if (value) specs.push({ label: col.label, value });
           break;
         }
+        case 'barcode': {
+          const bc = value.replace(/\s+/g, '').trim();
+          if (bc) barcode = bc;
+          break;
+        }
         case 'spec':
           if (value) specs.push({ label: col.label, value });
           break;
@@ -431,6 +453,7 @@ export class ExcelImportService {
       price,
       wholesalePrice,
       stock: stock != null ? stock : 1,
+      ...(barcode ? { barcode } : {}),
       specs,
       imageUrl: imagesByRow.get(rowNumber) || PRODUCT_IMAGE_PLACEHOLDER,
     };
@@ -726,6 +749,7 @@ export class ExcelImportService {
                   price: row.price,
                   wholesalePrice: row.wholesalePrice,
                   stock: row.stock,
+                  ...(row.barcode ? { barcode: row.barcode } : {}),
                   categoryId: new Types.ObjectId(categoryId),
                   specs: row.specs,
                   status: ProductStatus.Active,
@@ -754,6 +778,7 @@ export class ExcelImportService {
             price: row.price,
             wholesalePrice: row.wholesalePrice,
             stock: row.stock,
+            ...(row.barcode ? { barcode: row.barcode } : {}),
             categoryId: new Types.ObjectId(categoryId),
             images: [row.imageUrl],
             specs: row.specs,
@@ -812,6 +837,7 @@ export class ExcelImportService {
                 price: rowLike.price,
                 wholesalePrice: rowLike.wholesalePrice,
                 stock: rowLike.stock,
+                ...(rowLike.barcode ? { barcode: rowLike.barcode } : {}),
                 categoryId: new Types.ObjectId(categoryId),
                 specs: rowLike.specs,
                 status: ProductStatus.Active,
@@ -866,6 +892,7 @@ export class ExcelImportService {
                   price: doc.price,
                   wholesalePrice: doc.wholesalePrice,
                   stock: doc.stock,
+                  ...(doc.barcode ? { barcode: doc.barcode } : {}),
                   categoryId: doc.categoryId,
                   specs: doc.specs,
                   status: doc.status,

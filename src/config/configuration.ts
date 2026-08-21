@@ -85,6 +85,22 @@ export default () => {
   cacheTtlSeconds: parseInt(optionalEnv('CACHE_TTL_SECONDS', '60'), 10),
   lowStockThreshold: parseInt(optionalEnv('LOW_STOCK_THRESHOLD', '5'), 10),
 
+  /** Smartup ERP — ombor qoldig‘ini barcode bo‘yicha sync */
+  smartup: {
+    enabled: process.env.SMARTUP_ENABLED === 'true',
+    baseUrl: stripSlash(
+      optionalEnv('SMARTUP_BASE_URL', 'https://smartup.online'),
+    ),
+    inventoryBalancePath: optionalEnv(
+      'SMARTUP_INVENTORY_BALANCE_PATH',
+      '/b/anor/mxsx/mr/inventory_balance$export',
+    ),
+    username: optionalEnv('SMARTUP_USERNAME'),
+    password: optionalEnv('SMARTUP_PASSWORD'),
+    /** Cron expression (default: har 10 daqiqa) */
+    syncCron: optionalEnv('SMARTUP_SYNC_CRON', '*/10 * * * *'),
+  },
+
   telegram: {
     botToken: optionalEnv('TELEGRAM_BOT_TOKEN'),
     /** polling | webhook — bo'sh bo'lsa: production=webhook, else=polling */
@@ -94,6 +110,8 @@ export default () => {
     gatewayUrl: requireEnv('TELEGRAM_GATEWAY_URL').replace(/\/$/, ''),
     gatewayMock: process.env.GATEWAY_MOCK === 'true',
     gatewayMockCode: optionalEnv('GATEWAY_MOCK_CODE', '123456'),
+    /** Lokal /login: botga yozmasdan shu 6 xonali kod (productionda e'tiborsiz) */
+    devLoginCode: optionalEnv('DEV_LOGIN_CODE'),
     otpTtlSeconds: parseInt(optionalEnv('OTP_TTL_SECONDS', '600'), 10),
     otpCooldownSeconds: parseInt(optionalEnv('OTP_COOLDOWN_SECONDS', '600'), 10),
     otpDailyLimit: parseInt(optionalEnv('OTP_DAILY_LIMIT', '10'), 10),

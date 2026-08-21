@@ -24,6 +24,7 @@ import { SeoModule } from './modules/seo/seo.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { HealthModule } from './health/health.module';
 import { TelegramBotModule } from './modules/telegram-bot/telegram-bot.module';
+import { SmartupModule } from './modules/smartup/smartup.module';
 
 @Module({
   imports: [
@@ -71,6 +72,7 @@ import { TelegramBotModule } from './modules/telegram-bot/telegram-bot.module';
     SeoModule,
     HealthModule,
     TelegramBotModule,
+    SmartupModule,
   ],
   providers: [
     {

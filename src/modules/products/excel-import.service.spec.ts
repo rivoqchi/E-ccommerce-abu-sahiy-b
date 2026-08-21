@@ -192,6 +192,7 @@ describe('ExcelImportService price-list format', () => {
     expect(doc.price).toBe(12.5);
     expect(doc.wholesalePrice).toBe(12.5);
     expect(doc.stock).toBe(6);
+    expect(doc.barcode).toBe('9811537731971');
     expect(Array.isArray(doc.images)).toBe(true);
     expect(String((doc.images as string[])[0])).toContain(
       'https://pub-test.r2.dev/products/',

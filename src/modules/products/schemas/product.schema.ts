@@ -24,6 +24,10 @@ export class Product {
   @Prop({ required: true, unique: true, trim: true, uppercase: true })
   code!: string;
 
+  /** Shtrix-kod (Smartup ombor sync uchun) */
+  @Prop({ trim: true, index: true, sparse: true })
+  barcode?: string;
+
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   slug!: string;
 

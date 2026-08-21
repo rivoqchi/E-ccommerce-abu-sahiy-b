@@ -46,9 +46,12 @@ export class ProductsService {
       dto.slug ? slugify(dto.slug) : slugify(code) || slugify(dto.name),
     );
 
+    const barcode = dto.barcode?.replace(/\s+/g, '').trim() || undefined;
+
     const product = await this.productModel.create({
       ...dto,
       code,
+      barcode,
       description: dto.description?.trim() || dto.name,
       slug,
       price: dto.price,
@@ -359,6 +362,10 @@ export class ProductsService {
       }
       updatePayload.code = code;
     }
+    if (dto.barcode !== undefined) {
+      const barcode = dto.barcode.replace(/\s+/g, '').trim();
+      updatePayload.barcode = barcode || undefined;
+    }
     if (dto.categoryId) {
       updatePayload.categoryId = new Types.ObjectId(dto.categoryId);
     }
@@ -409,6 +416,28 @@ export class ProductsService {
     return product;
   }
 
+  /**
+   * Faqat ombor sonini yozadi — boshqa product maydonlariga tegilmaydi.
+   */
+  async setStockOnly(productId: string, stock: number) {
+    const qty = Math.max(0, Math.floor(Number(stock) || 0));
+    const product = await this.productModel
+      .findByIdAndUpdate(
+        productId,
+        { $set: { stock: qty } },
+        { new: true },
+      )
+      .lean()
+      .exec();
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    await this.invalidateCache(productId, product.slug);
+    return product;
+  }
+
   async countLowStock(threshold: number) {
     return this.productModel
       .countDocuments({
@@ -420,6 +449,23 @@ export class ProductsService {
 
   async countAll() {
     return this.productModel.countDocuments().exec();
+  }
+
+  /**
+   * Smartup sync: barcode maydoni yoki specs dagi Штрих-код bo‘lgan mahsulotlar.
+   */
+  async findForBarcodeStockSync() {
+    return this.productModel
+      .find({
+        isActive: true,
+        $or: [
+          { barcode: { $exists: true, $nin: [null, ''] } },
+          { 'specs.label': { $regex: /штрих|barcode|shtrix/i } },
+        ],
+      })
+      .select('_id barcode stock specs code')
+      .lean()
+      .exec();
   }
 
   private async buildUniqueSlug(base: string, excludeId?: string) {

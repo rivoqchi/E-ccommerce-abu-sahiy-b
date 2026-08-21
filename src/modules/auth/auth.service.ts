@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   UnauthorizedException,
   BadRequestException,
   HttpException,
@@ -8,7 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { createHash, randomBytes, randomInt } from 'crypto';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { UsersService } from '../users/users.service';
 import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
@@ -35,6 +36,8 @@ interface BotWebLoginPayload {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
@@ -334,7 +337,7 @@ export class AuthService {
     const key = `bot-otp:code:${normalized}`;
     const payload = await this.redisService.getJson<BotOtpPayload>(key);
     if (!payload?.userId) {
-      throw new UnauthorizedException('Kod noto‘g‘ri yoki muddati tugagan');
+      return this.tryDevLoginCode(normalized);
     }
 
     await this.redisService.del(
@@ -354,6 +357,64 @@ export class AuthService {
       user: this.usersService.toPublic(user),
       ...tokens,
     };
+  }
+
+  /**
+   * DEV_LOGIN_CODE (yoki GATEWAY_MOCK_CODE) — botga yozmasdan /login.
+   * Kod .env da bo‘lsa ishlaydi. Login input faqat 6 xona.
+   */
+  private async tryDevLoginCode(code: string) {
+    const entered = sixDigitCode(code);
+    const allowed = this.devLoginCodes();
+    const matched =
+      entered.length === 6 &&
+      allowed.some((expected) => codesEqual(entered, expected));
+
+    if (!matched) {
+      throw new UnauthorizedException('Kod noto‘g‘ri yoki muddati tugagan');
+    }
+
+    const phone = (
+      this.configService.get<string>('telegram.superAdminPhone') ?? ''
+    ).trim();
+    if (!phone) {
+      throw new BadRequestException('SUPER_ADMIN_PHONE sozlanmagan');
+    }
+
+    this.logger.warn(`DEV_LOGIN_CODE used for ${phone}`);
+
+    let user = await this.usersService.findOrCreateByPhone(phone);
+    user = await this.usersService.ensureSuperAdmin(user);
+    const promoted = await this.usersService.promoteToAdminByPhone(phone);
+    if (promoted) user = promoted;
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is disabled');
+    }
+
+    const tokens = await this.issueTokens(user);
+    await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
+    return {
+      user: this.usersService.toPublic(user),
+      ...tokens,
+    };
+  }
+
+  private devLoginCodes(): string[] {
+    const codes = new Set<string>();
+    const fromEnv = sixDigitCode(
+      process.env.DEV_LOGIN_CODE ||
+        this.configService.get<string>('telegram.devLoginCode') ||
+        '',
+    );
+    if (fromEnv) codes.add(fromEnv);
+
+    if (this.configService.get<boolean>('telegram.gatewayMock') === true) {
+      const mockCode = sixDigitCode(
+        this.configService.get<string>('telegram.gatewayMockCode') || '',
+      );
+      if (mockCode) codes.add(mockCode);
+    }
+    return [...codes];
   }
 
   /**
@@ -493,4 +554,17 @@ function normalizeAuthPhone(phone: string): string {
   if (trimmed.startsWith('+')) return trimmed;
   if (trimmed.startsWith('998') && trimmed.length >= 12) return `+${trimmed}`;
   return trimmed;
+}
+
+function sixDigitCode(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  if (digits.length < 6) return '';
+  return digits.slice(0, 6);
+}
+
+function codesEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  if (left.length !== 6 || right.length !== 6) return false;
+  return timingSafeEqual(left, right);
 }

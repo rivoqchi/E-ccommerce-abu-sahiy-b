@@ -19,20 +19,13 @@ import {
   extractRowImagesFromXlsx,
   preserveImageBuffer,
 } from './excel-image-extractor';
+import {
+  PRODUCT_IMAGE_PLACEHOLDER,
+  isPlaceholderProductImage,
+} from './product-completeness';
 
 export const EXCEL_IMPORT_MAX_BYTES = 150 * 1024 * 1024;
-
-const PRODUCT_IMAGE_PLACEHOLDER =
-  'https://images.unsplash.com/photo-1556911220-e15b29be8c8f?w=1200&q=80';
-
-/** Unsplash placeholder yoki bo‘sh URL — haqiqiy R2 rasm emas. */
-export function isPlaceholderProductImage(url?: string | null): boolean {
-  const u = url?.trim();
-  if (!u) return true;
-  if (u === PRODUCT_IMAGE_PLACEHOLDER) return true;
-  if (u.includes('photo-1556911220-e15b29be8c8f')) return true;
-  return false;
-}
+export { isPlaceholderProductImage, PRODUCT_IMAGE_PLACEHOLDER };
 
 type ColumnKind =
   | 'code'
@@ -65,7 +58,8 @@ type ParsedRow = {
   categoryName: string;
   price: number;
   wholesalePrice: number;
-  stock: number;
+  /** null = Excel da ombor ustuni yo‘q → stock ni o‘zgartirmaslik */
+  stock: number | null;
   barcode?: string;
   specs: Array<{ label: string; value: string }>;
   imageUrl: string;
@@ -327,24 +321,36 @@ export class ExcelImportService {
       return { kind: 'wholesale', label: header.trim() };
     }
 
-    // Ombordagi son / кейсдаги кол-во → stock
+    // Faqat haqiqiy ombor qoldig‘i → stock
+    // "Кол-во в кейсе" / box qty — stock EMAS (faqat specs)
     if (
       h === 'stock' ||
       h === 'остаток' ||
       h === 'ombor' ||
+      h === 'ombordagi son' ||
       h === 'qoldiq' ||
       h === 'soni' ||
-      h === 'количество' ||
-      h === 'кол-во' ||
-      h === 'кол во' ||
+      (h === 'количество' && !h.includes('кейсе')) ||
+      (h === 'кол-во' && !h.includes('кейсе')) ||
+      (h === 'кол во' && !h.includes('кейсе')) ||
+      h.includes('остаток') ||
+      (h.includes('quantity') &&
+        !h.includes('case') &&
+        !h.includes('кейсе')) ||
+      (h.includes('stock') && !h.includes('фото') && !h.includes('кейсе'))
+    ) {
+      return { kind: 'stock', label: header.trim() };
+    }
+
+    // Korobkadagi son — specs (stock emas!)
+    if (
       h.includes('кол-во в кейсе') ||
       h.includes('количество в кейсе') ||
       h.includes('qty in case') ||
       h.includes('quantity in case') ||
-      (h.includes('кейсе') && (h.includes('кол') || h.includes('колич'))) ||
-      (h.includes('stock') && !h.includes('фото'))
+      (h.includes('кейсе') && (h.includes('кол') || h.includes('колич')))
     ) {
-      return { kind: 'stock', label: header.trim() };
+      return { kind: 'spec', label: header.trim() };
     }
 
     // Shtrix-kod → barcode (Smartup sync)
@@ -452,7 +458,7 @@ export class ExcelImportService {
       categoryName,
       price,
       wholesalePrice,
-      stock: stock != null ? stock : 1,
+      stock: stock != null ? stock : null,
       ...(barcode ? { barcode } : {}),
       specs,
       imageUrl: imagesByRow.get(rowNumber) || PRODUCT_IMAGE_PLACEHOLDER,
@@ -748,7 +754,7 @@ export class ExcelImportService {
                   description: row.name,
                   price: row.price,
                   wholesalePrice: row.wholesalePrice,
-                  stock: row.stock,
+                  ...(row.stock != null ? { stock: row.stock } : {}),
                   ...(row.barcode ? { barcode: row.barcode } : {}),
                   categoryId: new Types.ObjectId(categoryId),
                   specs: row.specs,
@@ -777,7 +783,7 @@ export class ExcelImportService {
             description: row.name,
             price: row.price,
             wholesalePrice: row.wholesalePrice,
-            stock: row.stock,
+            stock: row.stock != null ? row.stock : 0,
             ...(row.barcode ? { barcode: row.barcode } : {}),
             categoryId: new Types.ObjectId(categoryId),
             images: [row.imageUrl],
@@ -836,7 +842,7 @@ export class ExcelImportService {
                 description: rowLike.name,
                 price: rowLike.price,
                 wholesalePrice: rowLike.wholesalePrice,
-                stock: rowLike.stock,
+                ...(rowLike.stock != null ? { stock: rowLike.stock } : {}),
                 ...(rowLike.barcode ? { barcode: rowLike.barcode } : {}),
                 categoryId: new Types.ObjectId(categoryId),
                 specs: rowLike.specs,
@@ -891,7 +897,7 @@ export class ExcelImportService {
                   description: doc.description,
                   price: doc.price,
                   wholesalePrice: doc.wholesalePrice,
-                  stock: doc.stock,
+                  ...(doc.stock != null ? { stock: doc.stock } : {}),
                   ...(doc.barcode ? { barcode: doc.barcode } : {}),
                   categoryId: doc.categoryId,
                   specs: doc.specs,

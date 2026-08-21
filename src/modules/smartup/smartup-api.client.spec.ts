@@ -7,25 +7,70 @@ describe('SmartupApiClient.parseBalances', () => {
     getOrThrow: (k: string) => k,
   } as unknown as ConfigService);
 
-  it('parses inventory_balance array with barcode + quantity', () => {
+  it('parses balance array with product_code + quantity (ombor soni)', () => {
     const rows = client.parseBalances({
-      inventory_balance: [
-        { barcode: '4601234567890', quantity: 12 },
-        { product_barcode: '111', balance: '3.5' },
+      balance: [
+        {
+          date: '16.02.2023',
+          warehouse_code: '001wrh',
+          product_code: '002pr',
+          product_id: '21',
+          quantity: '1400',
+          inventory_kind: 'G',
+        },
+        {
+          date: '16.02.2023',
+          product_code: 'MGFR 821',
+          quantity: 34,
+        },
       ],
     });
-    expect(rows).toEqual([
-      expect.objectContaining({ barcode: '4601234567890', quantity: 12 }),
-      expect.objectContaining({ barcode: '111', quantity: 3 }),
-    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        productCode: '002PR',
+        quantity: 1400,
+      }),
+    );
+    expect(rows[1]).toEqual(
+      expect.objectContaining({
+        productCode: 'MGFR821',
+        quantity: 34,
+      }),
+    );
   });
 
-  it('skips rows without barcode or quantity', () => {
+  it('aggregates quantity by product_code for latest date across warehouses', () => {
     const rows = client.parseBalances({
-      data: [{ code: 'X' }, { barcode: '9', stock: 1 }],
+      balance: [
+        {
+          date: '15.02.2023',
+          product_code: 'A1',
+          warehouse_code: 'W1',
+          quantity: '10',
+        },
+        {
+          date: '16.02.2023',
+          product_code: 'A1',
+          warehouse_code: 'W1',
+          quantity: '5',
+        },
+        {
+          date: '16.02.2023',
+          product_code: 'A1',
+          warehouse_code: 'W2',
+          quantity: '7',
+        },
+      ],
     });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.barcode).toBe('9');
-    expect(rows[0]!.quantity).toBe(1);
+    const map = client.aggregateQuantitiesByProductCode(rows);
+    expect(map.get('A1')).toBe(12); // 5+7 on latest date
+  });
+
+  it('skips rows without product_code or quantity', () => {
+    const rows = client.parseBalances({
+      balance: [{ product_code: 'X' }, { quantity: 1 }],
+    });
+    expect(rows).toHaveLength(0);
   });
 });

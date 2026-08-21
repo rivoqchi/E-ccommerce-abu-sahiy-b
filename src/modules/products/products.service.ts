@@ -17,6 +17,11 @@ import { CategoriesService } from '../categories/categories.service';
 import { BrandsService } from '../brands/brands.service';
 import { Order } from '../orders/schemas/order.schema';
 import { OrderStatus } from '../../common/enums/order-status.enum';
+import {
+  incompleteProductMongoFilter,
+  isStorefrontReadyProduct,
+  storefrontReadyMongoFilter,
+} from './product-completeness';
 
 @Injectable()
 export class ProductsService {
@@ -73,7 +78,7 @@ export class ProductsService {
     const limit = query.limit ?? 20;
     const page = query.page && query.page > 0 ? query.page : 1;
     const useOffset = Boolean(query.page) && !query.cursor;
-    const cacheKey = `products:list:${JSON.stringify(query)}`;
+    const cacheKey = `products:list:ready:${JSON.stringify(query)}`;
     const cached = await this.redis.getJson<{
       items: unknown[];
       nextCursor: string | null;
@@ -86,6 +91,7 @@ export class ProductsService {
     const filter: Record<string, unknown> = {
       status: ProductStatus.Active,
       isActive: true,
+      ...storefrontReadyMongoFilter(),
     };
 
     if (query.categoryId) {
@@ -160,32 +166,7 @@ export class ProductsService {
     }
 
     if (incomplete) {
-      and.push({
-        $or: [
-          { name: { $exists: false } },
-          { name: null },
-          { name: '' },
-          { name: { $regex: /^\s*$/ } },
-          { code: { $exists: false } },
-          { code: null },
-          { code: '' },
-          { code: { $regex: /^\s*$/ } },
-          { price: { $exists: false } },
-          { price: null },
-          { price: { $lte: 0 } },
-          { images: { $exists: false } },
-          { images: null },
-          { images: { $size: 0 } },
-          { 'images.0': { $exists: false } },
-          { 'images.0': '' },
-          { 'images.0': null },
-          {
-            'images.0':
-              'https://images.unsplash.com/photo-1556911220-e15b29be8c8f?w=1200&q=80',
-          },
-          { 'images.0': { $regex: 'photo-1556911220-e15b29be8c8f' } },
-        ],
-      });
+      and.push(incompleteProductMongoFilter());
     }
 
     const filter: Record<string, unknown> =
@@ -224,12 +205,17 @@ export class ProductsService {
       decoded = slug;
     }
 
-    const cacheKey = `products:slug:${decoded}`;
+    const cacheKey = `products:slug:ready:${decoded}`;
     let product = await this.redis.getJson<Record<string, unknown>>(cacheKey);
 
     if (!product) {
       const found = await this.productModel
-        .findOne({ slug: decoded, isActive: true })
+        .findOne({
+          slug: decoded,
+          status: ProductStatus.Active,
+          isActive: true,
+          ...storefrontReadyMongoFilter(),
+        })
         .populate('categoryId', 'name slug')
         .populate('brandId', 'name slug')
         .lean()
@@ -242,6 +228,15 @@ export class ProductsService {
       product = found as unknown as Record<string, unknown>;
       const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
       await this.redis.setJson(cacheKey, product, ttl);
+    }
+
+    if (
+      !isStorefrontReadyProduct(
+        product as Parameters<typeof isStorefrontReadyProduct>[0],
+      )
+    ) {
+      await this.redis.del(cacheKey);
+      throw new NotFoundException('Product not found');
     }
 
     const productId = String(
@@ -452,20 +447,21 @@ export class ProductsService {
   }
 
   /**
-   * Smartup sync: barcode maydoni yoki specs dagi Штрих-код bo‘lgan mahsulotlar.
+   * Smartup sync: faol mahsulotlar (code yoki barcode orqali moslash).
    */
-  async findForBarcodeStockSync() {
+  async findForStockSync() {
     return this.productModel
-      .find({
-        isActive: true,
-        $or: [
-          { barcode: { $exists: true, $nin: [null, ''] } },
-          { 'specs.label': { $regex: /штрих|barcode|shtrix/i } },
-        ],
-      })
+      .find({ isActive: true })
       .select('_id barcode stock specs code')
       .lean()
       .exec();
+  }
+
+  /**
+   * @deprecated use findForStockSync
+   */
+  async findForBarcodeStockSync() {
+    return this.findForStockSync();
   }
 
   private async buildUniqueSlug(base: string, excludeId?: string) {
@@ -487,6 +483,7 @@ export class ProductsService {
     await this.redis.del(`products:id:${productId}`);
     if (slug) {
       await this.redis.del(`products:slug:${slug}`);
+      await this.redis.del(`products:slug:ready:${slug}`);
     }
     await this.redis.delByPattern('seo:*');
     await this.redis.delByPattern('categories:list*');

@@ -13,6 +13,7 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 import { ProductStatus } from '../../common/enums/product-status.enum';
 import { slugify } from '../../common/utils/slugify';
 import { RedisService } from '../redis/redis.service';
+import { storefrontReadyMongoFilter } from '../products/product-completeness';
 
 const LIST_CACHE_KEY = 'categories:list';
 
@@ -43,7 +44,7 @@ export class CategoriesService {
   }
 
   async findAll(activeOnly = true) {
-    const cacheKey = `${LIST_CACHE_KEY}:${activeOnly ? 'active' : 'all'}:counts`;
+    const cacheKey = `${LIST_CACHE_KEY}:${activeOnly ? 'active' : 'all'}:counts:ready`;
     const cached = await this.redis.getJson<unknown[]>(cacheKey);
     if (cached) return cached;
 
@@ -62,6 +63,7 @@ export class CategoriesService {
                   $expr: { $eq: ['$categoryId', '$$categoryId'] },
                   status: ProductStatus.Active,
                   isActive: true,
+                  ...storefrontReadyMongoFilter(),
                 },
               },
               { $count: 'count' },

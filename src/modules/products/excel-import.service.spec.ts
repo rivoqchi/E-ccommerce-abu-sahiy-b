@@ -191,7 +191,7 @@ describe('ExcelImportService price-list format', () => {
     expect(doc.code).toBe('JEC7337-L1');
     expect(doc.price).toBe(12.5);
     expect(doc.wholesalePrice).toBe(12.5);
-    expect(doc.stock).toBe(6);
+    expect(doc.stock).toBe(0); // кейс soni stock emas — yangi mahsulot default 0
     expect(doc.barcode).toBe('9811537731971');
     expect(Array.isArray(doc.images)).toBe(true);
     expect(String((doc.images as string[])[0])).toContain(
@@ -299,7 +299,8 @@ describe('ExcelImportService price-list format', () => {
     expect($set.name).toBe('САЛАТНИЦА UPDATED');
     expect($set.price).toBe(20);
     expect($set.wholesalePrice).toBe(18);
-    expect($set.stock).toBe(10);
+    // Excel da faqat "Кол-во в кейсе" — stock yangilanmaydi
+    expect($set.stock).toBeUndefined();
     expect($set.images).toBeUndefined();
     expect(r2.putObject).not.toHaveBeenCalled();
   });
@@ -391,7 +392,7 @@ describe('ExcelImportService price-list format', () => {
     expect(String(op.updateOne.filter._id)).toBe(String(existingId));
     expect(op.updateOne.update.$set.images).toBeUndefined();
     expect(op.updateOne.update.$set.code).toBeUndefined();
-    expect(op.updateOne.update.$set.stock).toBe(6);
+    expect(op.updateOne.update.$set.stock).toBeUndefined();
   });
 
   it('never overwrites existing real R2 image even when Excel has a photo', async () => {

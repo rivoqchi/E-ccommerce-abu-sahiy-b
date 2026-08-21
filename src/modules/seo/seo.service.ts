@@ -6,6 +6,10 @@ import { Product } from '../products/schemas/product.schema';
 import { Category } from '../categories/schemas/category.schema';
 import { ProductStatus } from '../../common/enums/product-status.enum';
 import { RedisService } from '../redis/redis.service';
+import {
+  isStorefrontReadyProduct,
+  storefrontReadyMongoFilter,
+} from '../products/product-completeness';
 
 @Injectable()
 export class SeoService {
@@ -17,13 +21,17 @@ export class SeoService {
   ) {}
 
   async getSitemap() {
-    const cacheKey = 'seo:sitemap';
+    const cacheKey = 'seo:sitemap:ready';
     const cached = await this.redis.getJson<unknown>(cacheKey);
     if (cached) return cached;
 
     const [products, categories] = await Promise.all([
       this.productModel
-        .find({ status: ProductStatus.Active, isActive: true })
+        .find({
+          status: ProductStatus.Active,
+          isActive: true,
+          ...storefrontReadyMongoFilter(),
+        })
         .select('slug updatedAt metaTitle')
         .lean()
         .exec(),
@@ -63,12 +71,17 @@ export class SeoService {
     if (cached) return cached;
 
     const product = await this.productModel
-      .findOne({ slug, isActive: true })
+      .findOne({
+        slug,
+        status: ProductStatus.Active,
+        isActive: true,
+        ...storefrontReadyMongoFilter(),
+      })
       .select('name slug metaTitle metaDescription ogImage images description')
       .lean()
       .exec();
 
-    if (!product) {
+    if (!product || !isStorefrontReadyProduct(product)) {
       return null;
     }
 

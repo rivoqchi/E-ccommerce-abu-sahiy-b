@@ -16,6 +16,7 @@ import { OrderStatus } from '../../common/enums/order-status.enum';
 import { RealtimeService } from '../realtime/realtime.service';
 import { PriceTier } from '../../common/enums/price-tier.enum';
 import { resolveUnitPrice } from '../../common/utils/pricing';
+import { isStorefrontReadyProduct } from '../products/product-completeness';
 
 const STATUS_FLOW: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.Pending]: [OrderStatus.Paid, OrderStatus.Cancelled],
@@ -127,7 +128,7 @@ export class OrdersService {
         }
         throw err;
       }
-      if (!product.isActive) {
+      if (!isStorefrontReadyProduct(product)) {
         throw new BadRequestException(`Mahsulot mavjud emas: ${product.name}`);
       }
       if (product.stock < line.quantity) {

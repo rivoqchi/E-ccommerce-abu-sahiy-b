@@ -32,6 +32,10 @@ export class SmartupStockSyncService {
     await this.syncStock();
   }
 
+  /**
+   * Smartup Balance `quantity` → lokal `stock` (faqat soni).
+   * Moslash: product_code ↔ code, yoki barcode ↔ inventory$export orqali code.
+   */
   async syncStock(): Promise<SmartupSyncResult> {
     if (!this.api.isConfigured()) {
       return {
@@ -65,24 +69,39 @@ export class SmartupStockSyncService {
     let unchanged = 0;
 
     try {
-      this.logger.log('Smartup inventory balance sync boshlandi');
-      const balances = await this.api.exportInventoryBalances({});
-      fetched = balances.length;
+      this.logger.log('Smartup Balance sync boshlandi (faqat stock)');
+      const rows = await this.api.exportInventoryBalances();
+      fetched = rows.length;
 
-      const byBarcode = new Map<string, number>();
-      for (const row of balances) {
-        if (!row.barcode) continue;
-        byBarcode.set(row.barcode, row.quantity);
-      }
+      const qtyByCode = this.api.aggregateQuantitiesByProductCode(rows);
+      const barcodeToCode = await this.api.exportInventoryBarcodeMap();
 
-      const products = await this.productsService.findForBarcodeStockSync();
+      const products = await this.productsService.findForStockSync();
+
       for (const product of products) {
+        const code = this.api.normCode(String(product.code ?? ''));
         const barcode = this.resolveProductBarcode(product);
-        if (!barcode) continue;
-        if (!byBarcode.has(barcode)) continue;
+
+        let qty: number | undefined;
+        if (code && qtyByCode.has(code)) {
+          qty = qtyByCode.get(code);
+        } else if (barcode && barcodeToCode.has(barcode)) {
+          const mappedCode = barcodeToCode.get(barcode)!;
+          if (qtyByCode.has(mappedCode)) {
+            qty = qtyByCode.get(mappedCode);
+          }
+        } else if (barcode) {
+          // Balance qatorida to‘g‘ridan-to‘g‘ri barcode bo‘lsa
+          for (const row of rows) {
+            if (row.barcode === barcode) {
+              qty = (qty ?? 0) + row.quantity;
+            }
+          }
+        }
+
+        if (qty === undefined) continue;
 
         matched += 1;
-        const qty = byBarcode.get(barcode)!;
         const current = Number(product.stock) || 0;
         if (current === qty) {
           unchanged += 1;
@@ -90,7 +109,6 @@ export class SmartupStockSyncService {
         }
 
         try {
-          // Faqat stock — name/price/images/specs o‘zgarmaydi
           await this.inventoryService.overwriteStockOnly(
             String(product._id),
             qty,
@@ -138,8 +156,7 @@ export class SmartupStockSyncService {
     const direct = product.barcode?.replace(/\s+/g, '').trim();
     if (direct) return direct;
 
-    const specs = product.specs ?? [];
-    for (const spec of specs) {
+    for (const spec of product.specs ?? []) {
       const label = (spec.label ?? '').toLowerCase();
       if (
         label.includes('штрих') ||

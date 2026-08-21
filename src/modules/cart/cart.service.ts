@@ -13,6 +13,7 @@ import { RealtimeService } from '../realtime/realtime.service';
 import { UsersService } from '../users/users.service';
 import { PriceTier } from '../../common/enums/price-tier.enum';
 import { resolveUnitPrice } from '../../common/utils/pricing';
+import { isStorefrontReadyProduct } from '../products/product-completeness';
 
 @Injectable()
 export class CartService {
@@ -41,6 +42,9 @@ export class CartService {
 
   async addItem(dto: AddCartItemDto, userId?: string, guestId?: string) {
     const product = await this.productsService.findById(dto.productId);
+    if (!isStorefrontReadyProduct(product)) {
+      throw new BadRequestException('Mahsulot mavjud emas');
+    }
     if (product.stock < dto.quantity) {
       throw new BadRequestException('Insufficient stock');
     }

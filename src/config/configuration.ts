@@ -85,7 +85,7 @@ export default () => {
   cacheTtlSeconds: parseInt(optionalEnv('CACHE_TTL_SECONDS', '60'), 10),
   lowStockThreshold: parseInt(optionalEnv('LOW_STOCK_THRESHOLD', '5'), 10),
 
-  /** Smartup ERP — ombor qoldig‘ini barcode bo‘yicha sync */
+  /** Smartup ERP — ombor qoldig‘ini barcode/code bo‘yicha sync */
   smartup: {
     enabled: process.env.SMARTUP_ENABLED === 'true',
     baseUrl: stripSlash(
@@ -93,10 +93,18 @@ export default () => {
     ),
     inventoryBalancePath: optionalEnv(
       'SMARTUP_INVENTORY_BALANCE_PATH',
-      '/b/anor/mxsx/mr/inventory_balance$export',
+      '/b/anor/mxsx/mkw/balance$export',
+    ),
+    inventoryPath: optionalEnv(
+      'SMARTUP_INVENTORY_PATH',
+      '/b/anor/mxsx/mr/inventory$export',
     ),
     username: optionalEnv('SMARTUP_USERNAME'),
     password: optionalEnv('SMARTUP_PASSWORD'),
+    filialCode: optionalEnv('SMARTUP_FILIAL_CODE'),
+    warehouseCode: optionalEnv('SMARTUP_WAREHOUSE_CODE'),
+    /** Balance so‘rovi sana oralig‘i (kun) */
+    balanceDays: parseInt(optionalEnv('SMARTUP_BALANCE_DAYS', '7'), 10),
     /** Cron expression (default: har 10 daqiqa) */
     syncCron: optionalEnv('SMARTUP_SYNC_CRON', '*/10 * * * *'),
   },

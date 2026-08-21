@@ -25,6 +25,8 @@ ENV NODE_ENV=production
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
 COPY package.json ./
+# /start yo'riqnoma rasmlari: uploads emas — image ichida, deployda o'chmaydi
+COPY --from=build /app/src/modules/telegram-bot/assets ./dist/modules/telegram-bot/assets
 RUN mkdir -p uploads/avatars uploads/products
 EXPOSE 4000
 CMD ["node", "dist/main.js"]

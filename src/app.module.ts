@@ -10,7 +10,10 @@ import { RedisModule } from './modules/redis/redis.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { CategoriesModule } from './modules/categories/categories.module';
+import { HamkorPartnersModule } from './modules/hamkor-partners/hamkor-partners.module';
+import { HamkorCategoriesModule } from './modules/hamkor-categories/hamkor-categories.module';
 import { ProductsModule } from './modules/products/products.module';
+import { HamkorProductsModule } from './modules/hamkor-products/hamkor-products.module';
 import { BrandsModule } from './modules/brands/brands.module';
 import { SellersModule } from './modules/sellers/sellers.module';
 import { StoriesModule } from './modules/stories/stories.module';
@@ -25,6 +28,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
 import { HealthModule } from './health/health.module';
 import { TelegramBotModule } from './modules/telegram-bot/telegram-bot.module';
 import { SmartupModule } from './modules/smartup/smartup.module';
+import { ExchangeRateModule } from './modules/exchange-rate/exchange-rate.module';
 
 @Module({
   imports: [
@@ -59,8 +63,11 @@ import { SmartupModule } from './modules/smartup/smartup.module';
     AuthModule,
     UsersModule,
     CategoriesModule,
+    HamkorPartnersModule,
+    HamkorCategoriesModule,
     BrandsModule,
     ProductsModule,
+    HamkorProductsModule,
     SellersModule,
     StoriesModule,
     AdminModule,
@@ -73,6 +80,7 @@ import { SmartupModule } from './modules/smartup/smartup.module';
     HealthModule,
     TelegramBotModule,
     SmartupModule,
+    ExchangeRateModule,
   ],
   providers: [
     {

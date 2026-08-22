@@ -637,7 +637,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
           `${index + 1}) #${id}`,
           `📅 ${date}`,
           `📊 ${status}`,
-          `💰 ${formatMoney(order.total)}`,
+          `💰 ${formatMoney(order.total, (order as { currency?: string }).currency)}`,
           items + more,
         ].join('\n');
       })
@@ -839,14 +839,23 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   }
 }
 
-function formatMoney(amount: number): string {
-  try {
-    return new Intl.NumberFormat('uz-UZ', {
-      style: 'currency',
-      currency: 'USD',
-      maximumFractionDigits: 2,
-    }).format(amount);
-  } catch {
-    return `${amount}`;
+function formatMoney(amount: number, currency?: string): string {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return '—';
+
+  if (currency === 'USD') {
+    try {
+      return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        maximumFractionDigits: 2,
+      }).format(value);
+    } catch {
+      return `$${value}`;
+    }
   }
+
+  const rounded = Math.round(Math.abs(value));
+  const grouped = rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return value < 0 ? `-${grouped}` : grouped;
 }

@@ -1,6 +1,7 @@
 import {
   ArrayMinSize,
   IsArray,
+  IsEnum,
   IsInt,
   IsMongoId,
   IsOptional,
@@ -11,6 +12,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ProductSource } from '../../../common/enums/product-source.enum';
 
 class CheckoutItemDto {
   @IsMongoId()
@@ -19,6 +21,10 @@ class CheckoutItemDto {
   @IsInt()
   @Min(1)
   quantity!: number;
+
+  @IsOptional()
+  @IsEnum(ProductSource)
+  source?: ProductSource;
 }
 
 export class StorefrontCheckoutDto {

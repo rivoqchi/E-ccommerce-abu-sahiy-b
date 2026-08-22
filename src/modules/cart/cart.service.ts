@@ -14,6 +14,7 @@ import { UsersService } from '../users/users.service';
 import { PriceTier } from '../../common/enums/price-tier.enum';
 import { resolveUnitPrice } from '../../common/utils/pricing';
 import { isStorefrontReadyProduct } from '../products/product-completeness';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 
 @Injectable()
 export class CartService {
@@ -23,6 +24,7 @@ export class CartService {
     private readonly usersService: UsersService,
     private readonly redis: RedisService,
     private readonly realtime: RealtimeService,
+    private readonly exchangeRate: ExchangeRateService,
   ) {}
 
   async getCart(userId?: string, guestId?: string) {
@@ -50,7 +52,8 @@ export class CartService {
     }
 
     const tier = await this.tierFor(userId);
-    const unitPrice = resolveUnitPrice(product, tier);
+    const rate = await this.exchangeRate.getRate();
+    const unitPrice = resolveUnitPrice(product, tier, rate);
 
     const cart = await this.findOrCreate(userId, guestId);
     const existing = cart.items.find(
@@ -101,8 +104,9 @@ export class CartService {
         throw new BadRequestException('Insufficient stock');
       }
       const tier = await this.tierFor(userId);
+      const rate = await this.exchangeRate.getRate();
       item.quantity = quantity;
-      item.unitPrice = resolveUnitPrice(product, tier);
+      item.unitPrice = resolveUnitPrice(product, tier, rate);
     }
 
     await cart.save();

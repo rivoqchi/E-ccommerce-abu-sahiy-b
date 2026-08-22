@@ -13,7 +13,7 @@ import {
 import { Type } from 'class-transformer';
 import { ProductStatus } from '../../../common/enums/product-status.enum';
 
-export class ProductSpecDto {
+export class HamkorProductSpecDto {
   @IsString()
   @MinLength(1)
   label!: string;
@@ -23,20 +23,14 @@ export class ProductSpecDto {
   value!: string;
 }
 
-export class CreateProductDto {
+export class CreateHamkorProductDto {
   @IsString()
   @MinLength(2)
   name!: string;
 
-  /** Mahsulot kodi (SKU) */
   @IsString()
   @MinLength(1)
   code!: string;
-
-  /** Shtrix-kod (Smartup ombor sync) */
-  @IsOptional()
-  @IsString()
-  barcode?: string;
 
   @IsOptional()
   @IsString()
@@ -46,12 +40,10 @@ export class CreateProductDto {
   @IsString()
   description?: string;
 
-  /** Oddiy narx (USD, legacy). Optom berilsa shunga teng saqlanadi. */
   @IsNumber()
   @Min(0)
   price!: number;
 
-  /** Optom narx (USD). Berilmasa oddiy narx olinadi. */
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -67,11 +59,10 @@ export class CreateProductDto {
   stock!: number;
 
   @IsMongoId()
-  categoryId!: string;
+  partnerId!: string;
 
-  @IsOptional()
   @IsMongoId()
-  brandId?: string;
+  categoryId!: string;
 
   @IsArray()
   @ArrayMinSize(1, { message: 'Kamida 1 ta rasm yuklash majburiy' })
@@ -81,27 +72,10 @@ export class CreateProductDto {
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => ProductSpecDto)
-  specs?: ProductSpecDto[];
+  @Type(() => HamkorProductSpecDto)
+  specs?: HamkorProductSpecDto[];
 
   @IsOptional()
   @IsEnum(ProductStatus)
   status?: ProductStatus;
-
-  @IsOptional()
-  @IsString()
-  metaTitle?: string;
-
-  @IsOptional()
-  @IsString()
-  metaDescription?: string;
-
-  @IsOptional()
-  @IsString()
-  ogImage?: string;
-
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  tags?: string[];
 }

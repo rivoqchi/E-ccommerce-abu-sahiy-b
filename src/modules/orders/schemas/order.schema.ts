@@ -1,6 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import { OrderStatus } from '../../../common/enums/order-status.enum';
+import { ProductSource } from '../../../common/enums/product-source.enum';
 
 export type OrderDocument = HydratedDocument<Order>;
 
@@ -20,6 +21,15 @@ export class OrderItem {
 
   @Prop({ required: true, min: 0 })
   unitPrice!: number;
+
+  @Prop({ type: String, enum: ProductSource, default: ProductSource.Store })
+  source?: ProductSource;
+
+  @Prop()
+  partnerId?: string;
+
+  @Prop()
+  partnerName?: string;
 }
 
 export const OrderItemSchema = SchemaFactory.createForClass(OrderItem);
@@ -67,6 +77,10 @@ export class Order {
 
   @Prop({ required: true, min: 0 })
   total!: number;
+
+  /** Optom buyurtma USD, oddiy — UZS */
+  @Prop({ type: String, default: 'UZS' })
+  currency?: string;
 
   @Prop({ type: String, enum: OrderStatus, default: OrderStatus.Pending })
   status!: OrderStatus;

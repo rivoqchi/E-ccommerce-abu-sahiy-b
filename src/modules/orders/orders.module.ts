@@ -7,6 +7,8 @@ import { CartModule } from '../cart/cart.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { UsersModule } from '../users/users.module';
 import { ProductsModule } from '../products/products.module';
+import { HamkorProductsModule } from '../hamkor-products/hamkor-products.module';
+import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 
 @Module({
   imports: [
@@ -15,6 +17,8 @@ import { ProductsModule } from '../products/products.module';
     InventoryModule,
     UsersModule,
     ProductsModule,
+    HamkorProductsModule,
+    ExchangeRateModule,
   ],
   controllers: [OrdersController],
   providers: [OrdersService],

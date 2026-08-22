@@ -12,11 +12,14 @@ import { CartService } from '../cart/cart.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { UsersService } from '../users/users.service';
 import { ProductsService } from '../products/products.service';
+import { HamkorProductsService } from '../hamkor-products/hamkor-products.service';
 import { OrderStatus } from '../../common/enums/order-status.enum';
+import { ProductSource } from '../../common/enums/product-source.enum';
 import { RealtimeService } from '../realtime/realtime.service';
 import { PriceTier } from '../../common/enums/price-tier.enum';
-import { resolveUnitPrice } from '../../common/utils/pricing';
+import { resolveUnitPrice, shippingFeeForTier, orderCurrency } from '../../common/utils/pricing';
 import { isStorefrontReadyProduct } from '../products/product-completeness';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 
 const STATUS_FLOW: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.Pending]: [OrderStatus.Paid, OrderStatus.Cancelled],
@@ -42,7 +45,9 @@ export class OrdersService {
     private readonly inventoryService: InventoryService,
     private readonly usersService: UsersService,
     private readonly productsService: ProductsService,
+    private readonly hamkorProductsService: HamkorProductsService,
     private readonly realtime: RealtimeService,
+    private readonly exchangeRate: ExchangeRateService,
   ) {}
 
   async create(userId: string, dto: CreateOrderDto) {
@@ -62,7 +67,10 @@ export class OrdersService {
       (sum, item) => sum + item.unitPrice * item.quantity,
       0,
     );
-    const shippingFee = subtotal >= 100 ? 0 : 5;
+    const user = await this.usersService.findById(userId);
+    const priceTier = user.priceTier ?? PriceTier.Retail;
+    const rate = await this.exchangeRate.getRate();
+    const shippingFee = shippingFeeForTier(subtotal, rate, priceTier);
     const total = subtotal + shippingFee;
 
     const order = await this.orderModel.create({
@@ -77,6 +85,7 @@ export class OrdersService {
       subtotal,
       shippingFee,
       total,
+      currency: orderCurrency(priceTier),
       status: OrderStatus.Pending,
       shippingAddress: dto.shippingAddress,
       notes: dto.notes,
@@ -107,6 +116,7 @@ export class OrdersService {
     });
 
     const priceTier = user.priceTier ?? PriceTier.Retail;
+    const rate = await this.exchangeRate.getRate();
 
     const lines: Array<{
       productId: Types.ObjectId;
@@ -114,12 +124,22 @@ export class OrdersService {
       slug: string;
       quantity: number;
       unitPrice: number;
+      source: ProductSource;
+      partnerId?: string;
+      partnerName?: string;
     }> = [];
 
     for (const line of dto.items) {
+      const source =
+        line.source === ProductSource.Hamkor
+          ? ProductSource.Hamkor
+          : ProductSource.Store;
       let product;
       try {
-        product = await this.productsService.findById(line.productId);
+        product =
+          source === ProductSource.Hamkor
+            ? await this.hamkorProductsService.findById(line.productId)
+            : await this.productsService.findById(line.productId);
       } catch (err) {
         if (err instanceof NotFoundException) {
           throw new BadRequestException(
@@ -136,27 +156,55 @@ export class OrdersService {
           `Yetarli ombor yo'q: ${product.name} (qoldiq ${product.stock})`,
         );
       }
+      const partnerRef = (
+        product as {
+          partnerId?:
+            | Types.ObjectId
+            | { _id?: Types.ObjectId; name?: string };
+        }
+      ).partnerId;
+      const partnerId =
+        partnerRef && typeof partnerRef === 'object' && '_id' in partnerRef
+          ? String(partnerRef._id)
+          : partnerRef
+            ? String(partnerRef)
+            : undefined;
+      const partnerName =
+        partnerRef && typeof partnerRef === 'object' && 'name' in partnerRef
+          ? partnerRef.name
+          : undefined;
+
       lines.push({
         productId: product._id as Types.ObjectId,
         name: product.name,
         slug: product.slug,
         quantity: line.quantity,
-        unitPrice: resolveUnitPrice(product, priceTier),
+        unitPrice: resolveUnitPrice(product, priceTier, rate),
+        source,
+        partnerId,
+        partnerName,
       });
     }
 
     for (const line of lines) {
-      await this.inventoryService.reserve(
-        line.productId.toString(),
-        line.quantity,
-      );
+      if (line.source === ProductSource.Hamkor) {
+        await this.hamkorProductsService.adjustStock(
+          line.productId.toString(),
+          -line.quantity,
+        );
+      } else {
+        await this.inventoryService.reserve(
+          line.productId.toString(),
+          line.quantity,
+        );
+      }
     }
 
     const subtotal = lines.reduce(
       (sum, item) => sum + item.unitPrice * item.quantity,
       0,
     );
-    const shippingFee = subtotal >= 100 ? 0 : 5;
+    const shippingFee = shippingFeeForTier(subtotal, rate, priceTier);
     const total = subtotal + shippingFee;
 
     const order = await this.orderModel.create({
@@ -165,6 +213,7 @@ export class OrdersService {
       subtotal,
       shippingFee,
       total,
+      currency: orderCurrency(priceTier),
       status: OrderStatus.Pending,
       shippingAddress: {
         fullName,

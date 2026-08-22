@@ -31,6 +31,9 @@ export class OrderSubstituteItem {
 
   @Prop()
   partnerName?: string;
+
+  @Prop()
+  image?: string;
 }
 
 export const OrderSubstituteItemSchema =
@@ -76,6 +79,9 @@ export class OrderItem {
 
   @Prop({ type: [OrderSubstituteItemSchema], default: [] })
   substitutes?: OrderSubstituteItem[];
+
+  @Prop()
+  image?: string;
 }
 
 export const OrderItemSchema = SchemaFactory.createForClass(OrderItem);

@@ -25,6 +25,7 @@ import {
   incompleteProductMongoFilter,
   isStorefrontReadyProduct,
   storefrontReadyMongoFilter,
+  firstProductImage,
 } from './product-completeness';
 import {
   maskStorefrontProduct,
@@ -347,6 +348,22 @@ export class ProductsService {
     return product;
   }
 
+  async mapFirstImages(ids: string[]): Promise<Map<string, string>> {
+    const unique = [...new Set(ids.filter((id) => Types.ObjectId.isValid(id)))];
+    const map = new Map<string, string>();
+    if (!unique.length) return map;
+    const docs = await this.productModel
+      .find({ _id: { $in: unique } })
+      .select('images')
+      .lean()
+      .exec();
+    for (const doc of docs) {
+      const url = firstProductImage(doc.images);
+      if (url) map.set(String(doc._id), url);
+    }
+    return map;
+  }
+
   async update(id: string, dto: UpdateProductDto) {
     if (dto.categoryId) {
       await this.categoriesService.findById(dto.categoryId);
@@ -409,11 +426,8 @@ export class ProductsService {
 
   async adjustStock(productId: string, delta: number) {
     const product = await this.productModel
-      .findOneAndUpdate(
-        {
-          _id: productId,
-          ...(delta < 0 ? { stock: { $gte: Math.abs(delta) } } : {}),
-        },
+      .findByIdAndUpdate(
+        productId,
         { $inc: { stock: delta } },
         { new: true },
       )
@@ -421,7 +435,7 @@ export class ProductsService {
       .exec();
 
     if (!product) {
-      throw new ConflictException('Insufficient stock or product not found');
+      throw new NotFoundException('Product not found');
     }
 
     await this.invalidateCache(productId, product.slug);

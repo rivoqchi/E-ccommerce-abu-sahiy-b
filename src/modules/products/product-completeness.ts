@@ -14,6 +14,14 @@ export function isPlaceholderProductImage(url?: string | null): boolean {
   return false;
 }
 
+/** Buyurtma / Excel uchun birinchi haqiqiy rasm. */
+export function firstProductImage(
+  images?: string[] | null,
+): string | undefined {
+  const url = (images ?? []).find((u) => !isPlaceholderProductImage(u));
+  return url?.trim() || undefined;
+}
+
 /** Admin «Muammoli» tab — nom, kod, narx yoki haqiqiy rasm yetishmagan. */
 export function incompleteProductMongoFilter(): Record<string, unknown> {
   return {

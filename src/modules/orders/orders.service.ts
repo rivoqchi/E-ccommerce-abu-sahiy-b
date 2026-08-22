@@ -20,8 +20,14 @@ import { OrderItemFulfillment } from '../../common/enums/order-item-fulfillment.
 import { RealtimeService } from '../realtime/realtime.service';
 import { PriceTier } from '../../common/enums/price-tier.enum';
 import { resolveUnitPrice, shippingFeeForTier, orderCurrency } from '../../common/utils/pricing';
-import { isStorefrontReadyProduct } from '../products/product-completeness';
+import { isStorefrontReadyProduct, firstProductImage } from '../products/product-completeness';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
+import {
+  buildOrderWorkbook,
+  buildOrdersListWorkbook,
+  fetchExcelImage,
+  type ExcelOrder,
+} from './order-excel';
 
 const STATUS_FLOW: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.Pending]: [OrderStatus.Paid, OrderStatus.Cancelled],
@@ -172,6 +178,7 @@ export class OrdersService {
         slug: item.slug ?? '',
         quantity: item.quantity,
         unitPrice: item.unitPrice,
+        image: item.image,
       })),
       subtotal,
       shippingFee,
@@ -218,6 +225,7 @@ export class OrdersService {
       source: ProductSource;
       partnerId?: string;
       partnerName?: string;
+      image?: string;
     }> = [];
 
     for (const line of dto.items) {
@@ -241,11 +249,6 @@ export class OrdersService {
       }
       if (!isStorefrontReadyProduct(product)) {
         throw new BadRequestException(`Mahsulot mavjud emas: ${product.name}`);
-      }
-      if (product.stock < line.quantity) {
-        throw new BadRequestException(
-          `Yetarli ombor yo'q: ${product.name} (qoldiq ${product.stock})`,
-        );
       }
       const partnerRef = (
         product as {
@@ -274,6 +277,7 @@ export class OrdersService {
         source,
         partnerId,
         partnerName,
+        image: firstProductImage(product.images),
       });
     }
 
@@ -328,11 +332,12 @@ export class OrdersService {
     };
   }
   async findMine(userId: string) {
-    return this.orderModel
+    const rows = await this.orderModel
       .find({ userId: new Types.ObjectId(userId) })
       .sort({ createdAt: -1 })
       .lean()
       .exec();
+    return this.attachImages(rows);
   }
 
   async findById(id: string, userId?: string, isAdmin = false) {
@@ -345,11 +350,13 @@ export class OrdersService {
       throw new NotFoundException('Order not found');
     }
 
-    return order;
+    const [enriched] = await this.attachImages([order]);
+    return enriched;
   }
 
   async findAllAdmin() {
-    return this.orderModel.find().sort({ createdAt: -1 }).lean().exec();
+    const rows = await this.orderModel.find().sort({ createdAt: -1 }).lean().exec();
+    return this.attachImages(rows);
   }
 
   async updateStatus(id: string, status: OrderStatus) {
@@ -408,14 +415,8 @@ export class OrdersService {
     for (let i = 0; i < order.items.length; i++) {
       const current = order.items[i];
       const patch = dto.items[i];
-      const ordered = current.quantity;
       let given = Math.trunc(Number(patch.givenQuantity));
       if (!Number.isFinite(given) || given < 0) given = 0;
-      if (given > ordered) {
-        throw new BadRequestException(
-          `${current.name}: berilgan son ${ordered} dan oshmasligi kerak`,
-        );
-      }
 
       const substitutes: OrderSubstituteItem[] = [];
       for (const sub of patch.substitutes ?? []) {
@@ -509,6 +510,7 @@ export class OrdersService {
       source,
       partnerId,
       partnerName,
+      image: firstProductImage(product.images),
     };
   }
 
@@ -545,6 +547,117 @@ export class OrdersService {
       const { source, productId } = parseStockKey(key);
       await this.applyStockDelta(productId, delta, source);
     }
+  }
+
+  async excelForOrder(id: string) {
+    const order = await this.findById(id, undefined, true);
+    const urls = this.collectImageUrls(order.items);
+    const images = await this.fetchExcelImages(urls);
+    const wb = await buildOrderWorkbook(order as unknown as ExcelOrder, images);
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+    return {
+      buffer,
+      filename: `buyurtma-${String(order._id).slice(-8)}.xlsx`,
+    };
+  }
+
+  async excelForAll() {
+    const orders = await this.findAllAdmin();
+    const wb = await buildOrdersListWorkbook(orders as unknown as ExcelOrder[]);
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+    const d = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    return { buffer, filename: `buyurtmalar_${stamp}.xlsx` };
+  }
+
+  private collectImageUrls(
+    items?: Array<{
+      image?: string;
+      substitutes?: Array<{ image?: string }>;
+    }>,
+  ): string[] {
+    const urls: string[] = [];
+    for (const item of items ?? []) {
+      if (item.image) urls.push(item.image);
+      for (const sub of item.substitutes ?? []) {
+        if (sub.image) urls.push(sub.image);
+      }
+    }
+    return [...new Set(urls)];
+  }
+
+  private async fetchExcelImages(urls: string[]) {
+    const map = new Map<
+      string,
+      { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif' }
+    >();
+    const chunk = 4;
+    for (let i = 0; i < urls.length; i += chunk) {
+      const slice = urls.slice(i, i + chunk);
+      const results = await Promise.all(slice.map((u) => fetchExcelImage(u)));
+      slice.forEach((url, idx) => {
+        const img = results[idx];
+        if (img) map.set(url, img);
+      });
+    }
+    return map;
+  }
+
+  private async attachImages<
+    T extends {
+      items?: Array<{
+        productId?: unknown;
+        source?: string;
+        image?: string;
+        substitutes?: Array<{
+          productId?: unknown;
+          source?: string;
+          image?: string;
+        }>;
+      }>;
+    },
+  >(orders: T[]): Promise<T[]> {
+    const storeIds: string[] = [];
+    const hamkorIds: string[] = [];
+    const consider = (
+      source: string | undefined,
+      productId: unknown,
+      image?: string,
+    ) => {
+      if (image) return;
+      const id = String(productId ?? '');
+      if (!id || id === 'undefined') return;
+      if (source === ProductSource.Hamkor) hamkorIds.push(id);
+      else storeIds.push(id);
+    };
+    for (const order of orders) {
+      for (const item of order.items ?? []) {
+        consider(item.source, item.productId, item.image);
+        for (const sub of item.substitutes ?? []) {
+          consider(sub.source, sub.productId, sub.image);
+        }
+      }
+    }
+    const [storeMap, hamkorMap] = await Promise.all([
+      this.productsService.mapFirstImages(storeIds),
+      this.hamkorProductsService.mapFirstImages(hamkorIds),
+    ]);
+    const pick = (source: string | undefined, productId: unknown) => {
+      const id = String(productId ?? '');
+      return source === ProductSource.Hamkor
+        ? hamkorMap.get(id)
+        : storeMap.get(id);
+    };
+    for (const order of orders) {
+      for (const item of order.items ?? []) {
+        if (!item.image) item.image = pick(item.source, item.productId);
+        for (const sub of item.substitutes ?? []) {
+          if (!sub.image) sub.image = pick(sub.source, sub.productId);
+        }
+      }
+    }
+    return orders;
   }
 
   /** Unique paid buyers + recent avatars for product social proof. */

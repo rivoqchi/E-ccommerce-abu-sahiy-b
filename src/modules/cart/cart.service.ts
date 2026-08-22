@@ -47,9 +47,6 @@ export class CartService {
     if (!isStorefrontReadyProduct(product)) {
       throw new BadRequestException('Mahsulot mavjud emas');
     }
-    if (product.stock < dto.quantity) {
-      throw new BadRequestException('Insufficient stock');
-    }
 
     const tier = await this.tierFor(userId);
     const rate = await this.exchangeRate.getRate();
@@ -63,9 +60,6 @@ export class CartService {
     if (existing) {
       existing.quantity += dto.quantity;
       existing.unitPrice = unitPrice;
-      if (existing.quantity > product.stock) {
-        throw new BadRequestException('Insufficient stock');
-      }
     } else {
       cart.items.push({
         productId: new Types.ObjectId(dto.productId),
@@ -100,9 +94,6 @@ export class CartService {
       );
     } else {
       const product = await this.productsService.findById(productId);
-      if (product.stock < quantity) {
-        throw new BadRequestException('Insufficient stock');
-      }
       const tier = await this.tierFor(userId);
       const rate = await this.exchangeRate.getRate();
       item.quantity = quantity;

@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
@@ -49,6 +50,28 @@ export class OrdersController {
   @Get()
   findAllAdmin() {
     return this.ordersService.findAllAdmin();
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
+  @Get('export-excel')
+  async exportAllExcel() {
+    const { buffer, filename } = await this.ordersService.excelForAll();
+    return new StreamableFile(buffer, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="${filename}"`,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
+  @Get(':id/excel')
+  async exportOneExcel(@Param('id') id: string) {
+    const { buffer, filename } = await this.ordersService.excelForOrder(id);
+    return new StreamableFile(buffer, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="${filename}"`,
+    });
   }
 
   @UseGuards(JwtAuthGuard)

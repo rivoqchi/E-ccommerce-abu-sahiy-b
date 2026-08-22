@@ -1,6 +1,10 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { Product, ProductSchema } from './schemas/product.schema';
+import {
+  ProductDisplaySettings,
+  ProductDisplaySettingsSchema,
+} from './schemas/product-display-settings.schema';
 import { ProductsService } from './products.service';
 import { ProductsController } from './products.controller';
 import { ExcelImportService } from './excel-import.service';
@@ -13,6 +17,10 @@ import { UploadsModule } from '../uploads/uploads.module';
   imports: [
     MongooseModule.forFeature([
       { name: Product.name, schema: ProductSchema },
+      {
+        name: ProductDisplaySettings.name,
+        schema: ProductDisplaySettingsSchema,
+      },
       { name: Order.name, schema: OrderSchema },
     ]),
     forwardRef(() => CategoriesModule),

@@ -29,6 +29,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
 import { QueryAdminProductsDto } from './dto/query-admin-products.dto';
+import { UpdateProductDisplaySettingsDto } from './dto/update-product-display-settings.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -48,6 +49,33 @@ export class ProductsController {
   @Get()
   findAll(@Query() query: QueryProductsDto) {
     return this.productsService.findAll(query);
+  }
+
+  @Public()
+  @Get('display-settings')
+  getDisplaySettings(@Query('labels') labels?: string) {
+    const includeLabels =
+      labels === '1' || labels === 'true' || labels === 'yes';
+    return includeLabels
+      ? this.productsService.getAdminDisplaySettings()
+      : this.productsService.getDisplaySettings();
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
+  @Get('admin/display-settings')
+  getAdminDisplaySettings() {
+    return this.productsService.getAdminDisplaySettings();
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
+  @Patch('admin/display-settings')
+  updateDisplaySettings(@Body() dto: UpdateProductDisplaySettingsDto) {
+    return this.productsService.updateDisplaySettings(
+      dto.hiddenFields,
+      dto.hiddenSpecLabels,
+    );
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

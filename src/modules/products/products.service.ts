@@ -7,6 +7,10 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { ConfigService } from '@nestjs/config';
 import { Product } from './schemas/product.schema';
+import {
+  ProductDisplaySettings,
+  PRODUCT_DISPLAY_SETTINGS_KEY,
+} from './schemas/product-display-settings.schema';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
@@ -22,11 +26,19 @@ import {
   isStorefrontReadyProduct,
   storefrontReadyMongoFilter,
 } from './product-completeness';
+import {
+  normalizeSpecLabel,
+  sanitizeHiddenFields,
+  sanitizeHiddenSpecLabels,
+  type ProductDisplayField,
+} from './product-display-fields';
 
 @Injectable()
 export class ProductsService {
   constructor(
     @InjectModel(Product.name) private readonly productModel: Model<Product>,
+    @InjectModel(ProductDisplaySettings.name)
+    private readonly displaySettingsModel: Model<ProductDisplaySettings>,
     @InjectModel(Order.name) private readonly orderModel: Model<Order>,
     private readonly redis: RedisService,
     private readonly configService: ConfigService,
@@ -86,7 +98,7 @@ export class ProductsService {
       page: number;
       totalPages: number;
     }>(cacheKey);
-    if (cached) return cached;
+    if (cached) return this.withStorefrontMask(cached);
 
     const filter: Record<string, unknown> = {
       status: ProductStatus.Active,
@@ -141,7 +153,7 @@ export class ProductsService {
       const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
       await this.redis.setJson(cacheKey, result, ttl);
     }
-    return result;
+    return this.withStorefrontMask(result);
   }
 
   async findAllAdmin(
@@ -243,12 +255,16 @@ export class ProductsService {
       (product as { _id?: Types.ObjectId | string })._id ?? '',
     );
     const purchaseStats = await this.getBuyerStats(productId);
+    const settings = await this.getDisplaySettings();
 
-    return {
-      ...product,
-      buyerCount: purchaseStats.buyerCount,
-      recentBuyers: purchaseStats.recentBuyers,
-    };
+    return this.maskStorefrontProduct(
+      {
+        ...product,
+        buyerCount: purchaseStats.buyerCount,
+        recentBuyers: purchaseStats.recentBuyers,
+      },
+      settings,
+    );
   }
 
   private async getBuyerStats(productId: string) {
@@ -476,6 +492,149 @@ export class ProductsService {
       candidate = `${root}-${i}`;
       i += 1;
     }
+  }
+
+  async getDisplaySettings(): Promise<{
+    hiddenFields: ProductDisplayField[];
+    hiddenSpecLabels: string[];
+  }> {
+    const cacheKey = 'products:display-settings';
+    const cached = await this.redis.getJson<{
+      hiddenFields?: unknown;
+      hiddenSpecLabels?: unknown;
+    }>(cacheKey);
+    if (cached) {
+      return {
+        hiddenFields: sanitizeHiddenFields(cached.hiddenFields),
+        hiddenSpecLabels: sanitizeHiddenSpecLabels(cached.hiddenSpecLabels),
+      };
+    }
+
+    const doc = await this.displaySettingsModel
+      .findOne({ key: PRODUCT_DISPLAY_SETTINGS_KEY })
+      .lean()
+      .exec();
+    const result = {
+      hiddenFields: sanitizeHiddenFields(doc?.hiddenFields),
+      hiddenSpecLabels: sanitizeHiddenSpecLabels(doc?.hiddenSpecLabels),
+    };
+    const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
+    await this.redis.setJson(cacheKey, result, ttl);
+    return result;
+  }
+
+  async getAdminDisplaySettings() {
+    const settings = await this.getDisplaySettings();
+    const specLabels = await this.listUniqueSpecLabels();
+    return { ...settings, specLabels };
+  }
+
+  async updateDisplaySettings(
+    hiddenFields: ProductDisplayField[],
+    hiddenSpecLabels: string[],
+  ) {
+    const fields = sanitizeHiddenFields(hiddenFields);
+    const labels = sanitizeHiddenSpecLabels(hiddenSpecLabels);
+    const doc = await this.displaySettingsModel
+      .findOneAndUpdate(
+        { key: PRODUCT_DISPLAY_SETTINGS_KEY },
+        { $set: { hiddenFields: fields, hiddenSpecLabels: labels } },
+        { upsert: true, new: true },
+      )
+      .lean()
+      .exec();
+
+    await this.redis.del('products:display-settings');
+    return {
+      hiddenFields: sanitizeHiddenFields(doc?.hiddenFields ?? fields),
+      hiddenSpecLabels: sanitizeHiddenSpecLabels(
+        doc?.hiddenSpecLabels ?? labels,
+      ),
+    };
+  }
+
+  private async listUniqueSpecLabels(): Promise<string[]> {
+    const rows = await this.productModel
+      .aggregate<{ _id: string }>([
+        { $unwind: '$specs' },
+        {
+          $project: {
+            label: {
+              $trim: { input: { $ifNull: ['$specs.label', ''] } },
+            },
+          },
+        },
+        { $match: { label: { $nin: [null, ''] } } },
+        { $group: { _id: '$label' } },
+        { $sort: { _id: 1 } },
+        { $limit: 300 },
+      ])
+      .exec();
+    return rows
+      .map((row) => normalizeSpecLabel(String(row._id ?? '')))
+      .filter(Boolean);
+  }
+
+  private async withStorefrontMask<T extends { items: unknown[] }>(
+    result: T,
+  ): Promise<T> {
+    const settings = await this.getDisplaySettings();
+    if (!settings.hiddenFields.length && !settings.hiddenSpecLabels.length) {
+      return result;
+    }
+    return {
+      ...result,
+      items: (result.items as Record<string, unknown>[]).map((item) =>
+        this.maskStorefrontProduct(item, settings),
+      ),
+    };
+  }
+
+  private maskStorefrontProduct<T extends Record<string, unknown>>(
+    product: T,
+    settings: {
+      hiddenFields: ProductDisplayField[];
+      hiddenSpecLabels: string[];
+    },
+  ): T {
+    const { hiddenFields, hiddenSpecLabels } = settings;
+    if (!hiddenFields.length && !hiddenSpecLabels.length) return product;
+    const next: Record<string, unknown> = { ...product };
+
+    if (hiddenFields.includes('code')) {
+      delete next.code;
+    }
+    if (hiddenFields.includes('description')) {
+      next.description = '';
+    }
+    if (hiddenFields.includes('specs')) {
+      next.specs = [];
+    } else if (hiddenSpecLabels.length && Array.isArray(next.specs)) {
+      const hidden = new Set(
+        hiddenSpecLabels.map((label) => normalizeSpecLabel(label)),
+      );
+      next.specs = (
+        next.specs as Array<{ label?: string; value?: string }>
+      ).filter((spec) => !hidden.has(normalizeSpecLabel(spec.label ?? '')));
+    }
+    if (hiddenFields.includes('brand')) {
+      const brand = next.brandId;
+      if (brand && typeof brand === 'object') {
+        next.brandId = {
+          ...(brand as Record<string, unknown>),
+          name: '',
+        };
+      }
+    }
+    if (hiddenFields.includes('compareAtPrice')) {
+      delete next.compareAtPrice;
+    }
+    if (hiddenFields.includes('buyerCount')) {
+      next.buyerCount = 0;
+      next.recentBuyers = [];
+    }
+
+    return next as T;
   }
 
   private async invalidateCache(productId: string, slug?: string) {

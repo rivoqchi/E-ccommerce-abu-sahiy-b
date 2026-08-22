@@ -8,6 +8,7 @@ import { HamkorProductsService } from './hamkor-products.service';
 import { HamkorProductsController } from './hamkor-products.controller';
 import { HamkorCategoriesModule } from '../hamkor-categories/hamkor-categories.module';
 import { HamkorPartnersModule } from '../hamkor-partners/hamkor-partners.module';
+import { ProductsModule } from '../products/products.module';
 import {
   HamkorPartner,
   HamkorPartnerSchema,
@@ -21,6 +22,7 @@ import {
     ]),
     HamkorCategoriesModule,
     HamkorPartnersModule,
+    ProductsModule,
   ],
   controllers: [HamkorProductsController],
   providers: [HamkorProductsService],

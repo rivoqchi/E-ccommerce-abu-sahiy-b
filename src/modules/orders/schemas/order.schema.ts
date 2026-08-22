@@ -2,12 +2,13 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import { OrderStatus } from '../../../common/enums/order-status.enum';
 import { ProductSource } from '../../../common/enums/product-source.enum';
+import { OrderItemFulfillment } from '../../../common/enums/order-item-fulfillment.enum';
 
 export type OrderDocument = HydratedDocument<Order>;
 
 @Schema({ _id: false })
-export class OrderItem {
-  @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
+export class OrderSubstituteItem {
+  @Prop({ type: Types.ObjectId, required: true })
   productId!: Types.ObjectId;
 
   @Prop({ required: true })
@@ -30,6 +31,51 @@ export class OrderItem {
 
   @Prop()
   partnerName?: string;
+}
+
+export const OrderSubstituteItemSchema =
+  SchemaFactory.createForClass(OrderSubstituteItem);
+
+@Schema({ _id: false })
+export class OrderItem {
+  @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
+  productId!: Types.ObjectId;
+
+  @Prop({ required: true })
+  name!: string;
+
+  @Prop({ required: true })
+  slug!: string;
+
+  /** Mijoz buyurtma qilgan son. */
+  @Prop({ required: true, min: 1 })
+  quantity!: number;
+
+  @Prop({ required: true, min: 0 })
+  unitPrice!: number;
+
+  @Prop({ type: String, enum: ProductSource, default: ProductSource.Store })
+  source?: ProductSource;
+
+  @Prop()
+  partnerId?: string;
+
+  @Prop()
+  partnerName?: string;
+
+  /** Ombordan berilgan son. Yo‘q bo‘lsa — quantity. */
+  @Prop({ min: 0 })
+  givenQuantity?: number;
+
+  @Prop({
+    type: String,
+    enum: OrderItemFulfillment,
+    default: OrderItemFulfillment.Given,
+  })
+  fulfillmentStatus?: OrderItemFulfillment;
+
+  @Prop({ type: [OrderSubstituteItemSchema], default: [] })
+  substitutes?: OrderSubstituteItem[];
 }
 
 export const OrderItemSchema = SchemaFactory.createForClass(OrderItem);
@@ -93,6 +139,19 @@ export class Order {
 
   @Prop()
   notes?: string;
+
+  /** Fulfillmentdan oldingi summa (mijoz ko‘rsin). */
+  @Prop({ min: 0 })
+  originalSubtotal?: number;
+
+  @Prop({ min: 0 })
+  originalShippingFee?: number;
+
+  @Prop({ min: 0 })
+  originalTotal?: number;
+
+  @Prop()
+  fulfilledAt?: Date;
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);

@@ -15,6 +15,7 @@ import { UsersService } from '../users/users.service';
 import { OrdersService } from '../orders/orders.service';
 import { AuthService } from '../auth/auth.service';
 import { RedisService } from '../redis/redis.service';
+import { ProductsService } from '../products/products.service';
 import {
   BTN_MINI_APP,
   BTN_MY_ORDERS,
@@ -50,6 +51,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     private readonly ordersService: OrdersService,
     private readonly authService: AuthService,
     private readonly redisService: RedisService,
+    private readonly productsService: ProductsService,
   ) {}
 
   async onModuleInit() {
@@ -610,6 +612,10 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const hidePrice = (
+      await this.productsService.getDisplaySettings()
+    ).hiddenFields.includes('price');
+
     const body = recent
       .map((order, index) => {
         const id = String(order._id).slice(-6).toUpperCase();
@@ -627,7 +633,25 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
           statusLabels[order.status] ?? String(order.status ?? '—');
         const items = (order.items ?? [])
           .slice(0, 3)
-          .map((i) => `• ${i.name} ×${i.quantity}`)
+          .map((i) => {
+            const status = String(i.fulfillmentStatus ?? '');
+            const given =
+              status === 'unavailable'
+                ? 0
+                : typeof i.givenQuantity === 'number'
+                  ? i.givenQuantity
+                  : i.quantity;
+            const subs = (i.substitutes ?? [])
+              .map((s) => `${s.name} ×${s.quantity}`)
+              .join(', ');
+            if (status === 'unavailable' || given === 0) {
+              return `• ${i.name} ×${i.quantity} (qolmagan)${subs ? ` → ${subs}` : ''}`;
+            }
+            if (given !== i.quantity) {
+              return `• ${i.name} ×${given}/${i.quantity}${subs ? ` → ${subs}` : ''}`;
+            }
+            return `• ${i.name} ×${i.quantity}${subs ? ` → ${subs}` : ''}`;
+          })
           .join('\n');
         const more =
           (order.items?.length ?? 0) > 3
@@ -637,7 +661,9 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
           `${index + 1}) #${id}`,
           `📅 ${date}`,
           `📊 ${status}`,
-          `💰 ${formatMoney(order.total, (order as { currency?: string }).currency)}`,
+          hidePrice
+            ? '💰 Narxni do\'kon bilan kelishasiz'
+            : `💰 ${formatMoney(order.total, (order as { currency?: string }).currency)}`,
           items + more,
         ].join('\n');
       })

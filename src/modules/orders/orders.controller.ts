@@ -11,6 +11,7 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { StorefrontCheckoutDto } from './dto/storefront-checkout.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { UpdateOrderFulfillmentDto } from './dto/update-order-fulfillment.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -65,5 +66,15 @@ export class OrdersController {
   @Patch(':id/status')
   updateStatus(@Param('id') id: string, @Body() dto: UpdateOrderStatusDto) {
     return this.ordersService.updateStatus(id, dto.status);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
+  @Patch(':id/fulfillment')
+  updateFulfillment(
+    @Param('id') id: string,
+    @Body() dto: UpdateOrderFulfillmentDto,
+  ) {
+    return this.ordersService.updateFulfillment(id, dto);
   }
 }

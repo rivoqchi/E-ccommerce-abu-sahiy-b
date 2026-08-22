@@ -19,9 +19,12 @@ describe('pricing', () => {
   });
 
   it('retail adds 10% then converts to so\'m', () => {
-    expect(resolveUnitPrice(product, PriceTier.Retail, rate)).toBe(
-      Math.round(8 * 12_000 * 1.1),
-    );
+    expect(resolveUnitPrice(product, PriceTier.Retail, rate)).toBe(106_000);
+  });
+
+  it('rounds so\'m to the nearest thousand', () => {
+    expect(usdToUzs(1, 234_574)).toBe(235_000);
+    expect(usdToUzs(1, 234_400)).toBe(234_000);
   });
 
   it('wholesale stays in USD', () => {

@@ -45,3 +45,54 @@ export function sanitizeHiddenSpecLabels(labels: unknown): string[] {
   }
   return [...unique];
 }
+
+export function maskStorefrontProduct<T extends Record<string, unknown>>(
+  product: T,
+  settings: {
+    hiddenFields: ProductDisplayField[];
+    hiddenSpecLabels: string[];
+  },
+): T {
+  const { hiddenFields, hiddenSpecLabels } = settings;
+  if (!hiddenFields.length && !hiddenSpecLabels.length) return product;
+  const next: Record<string, unknown> = { ...product };
+
+  if (hiddenFields.includes('code')) {
+    delete next.code;
+  }
+  if (hiddenFields.includes('description')) {
+    next.description = '';
+  }
+  if (hiddenFields.includes('specs')) {
+    next.specs = [];
+  } else if (hiddenSpecLabels.length && Array.isArray(next.specs)) {
+    const hidden = new Set(
+      hiddenSpecLabels.map((label) => normalizeSpecLabel(label)),
+    );
+    next.specs = (
+      next.specs as Array<{ label?: string; value?: string }>
+    ).filter((spec) => !hidden.has(normalizeSpecLabel(spec.label ?? '')));
+  }
+  if (hiddenFields.includes('brand')) {
+    const brand = next.brandId;
+    if (brand && typeof brand === 'object') {
+      next.brandId = {
+        ...(brand as Record<string, unknown>),
+        name: '',
+      };
+    }
+  }
+  if (hiddenFields.includes('price')) {
+    delete next.price;
+    delete next.wholesalePrice;
+    delete next.compareAtPrice;
+  } else if (hiddenFields.includes('compareAtPrice')) {
+    delete next.compareAtPrice;
+  }
+  if (hiddenFields.includes('buyerCount')) {
+    next.buyerCount = 0;
+    next.recentBuyers = [];
+  }
+
+  return next as T;
+}

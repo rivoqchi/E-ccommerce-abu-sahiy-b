@@ -20,6 +20,8 @@ import {
   isStorefrontReadyProduct,
   storefrontReadyMongoFilter,
 } from '../products/product-completeness';
+import { maskStorefrontProduct } from '../products/product-display-fields';
+import { ProductsService } from '../products/products.service';
 
 @Injectable()
 export class HamkorProductsService {
@@ -30,6 +32,7 @@ export class HamkorProductsService {
     private readonly configService: ConfigService,
     private readonly categoriesService: HamkorCategoriesService,
     private readonly partnersService: HamkorPartnersService,
+    private readonly productsService: ProductsService,
   ) {}
 
   async create(dto: CreateHamkorProductDto) {
@@ -82,7 +85,7 @@ export class HamkorProductsService {
       page: number;
       totalPages: number;
     }>(cacheKey);
-    if (cached) return cached;
+    if (cached) return this.withStorefrontMask(cached);
 
     const filter: Record<string, unknown> = {
       status: ProductStatus.Active,
@@ -126,7 +129,7 @@ export class HamkorProductsService {
       const ttl = this.configService.get<number>('cacheTtlSeconds', 60);
       await this.redis.setJson(cacheKey, result, ttl);
     }
-    return result;
+    return this.withStorefrontMask(result);
   }
 
   async findAllAdmin(
@@ -223,7 +226,8 @@ export class HamkorProductsService {
       throw new NotFoundException('Product not found');
     }
 
-    return product;
+    const settings = await this.productsService.getDisplaySettings();
+    return maskStorefrontProduct(product, settings);
   }
 
   async findById(id: string) {
@@ -332,6 +336,21 @@ export class HamkorProductsService {
       candidate = `${root}-${i}`;
       i += 1;
     }
+  }
+
+  private async withStorefrontMask<T extends { items: unknown[] }>(
+    result: T,
+  ): Promise<T> {
+    const settings = await this.productsService.getDisplaySettings();
+    if (!settings.hiddenFields.length && !settings.hiddenSpecLabels.length) {
+      return result;
+    }
+    return {
+      ...result,
+      items: (result.items as Record<string, unknown>[]).map((item) =>
+        maskStorefrontProduct(item, settings),
+      ),
+    };
   }
 
   private async invalidateCache(productId: string, slug?: string) {

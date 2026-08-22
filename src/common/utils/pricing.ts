@@ -8,6 +8,9 @@ export type PricedProduct = {
 /** Oddiy (retail) narx ustamasi — optom USD dan so‘mga o‘tkazishda. */
 export const RETAIL_MARKUP = 0.1;
 
+/** So‘m narxni minglikka yaxlitlash: 234 574 → 235 000. */
+export const UZS_ROUND_TO = 1_000;
+
 export const FREE_SHIPPING_USD = 100;
 export const SHIPPING_FEE_USD = 5;
 
@@ -32,7 +35,8 @@ export function usdToUzs(
   if (!Number.isFinite(usd) || !Number.isFinite(rate) || rate <= 0) {
     return Number.NaN;
   }
-  return Math.round(usd * rate * (1 + markup));
+  const raw = usd * rate * (1 + markup);
+  return Math.round(raw / UZS_ROUND_TO) * UZS_ROUND_TO;
 }
 
 /**

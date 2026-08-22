@@ -5,9 +5,10 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Order } from './schemas/order.schema';
+import { Order, OrderSubstituteItem } from './schemas/order.schema';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { StorefrontCheckoutDto } from './dto/storefront-checkout.dto';
+import { UpdateOrderFulfillmentDto } from './dto/update-order-fulfillment.dto';
 import { CartService } from '../cart/cart.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { UsersService } from '../users/users.service';
@@ -15,6 +16,7 @@ import { ProductsService } from '../products/products.service';
 import { HamkorProductsService } from '../hamkor-products/hamkor-products.service';
 import { OrderStatus } from '../../common/enums/order-status.enum';
 import { ProductSource } from '../../common/enums/product-source.enum';
+import { OrderItemFulfillment } from '../../common/enums/order-item-fulfillment.enum';
 import { RealtimeService } from '../realtime/realtime.service';
 import { PriceTier } from '../../common/enums/price-tier.enum';
 import { resolveUnitPrice, shippingFeeForTier, orderCurrency } from '../../common/utils/pricing';
@@ -35,6 +37,95 @@ function normalizePhone(phone: string): string {
   if (trimmed.startsWith('998')) return `+${trimmed}`;
   if (trimmed.startsWith('0')) return `+998${trimmed.slice(1)}`;
   return `+998${trimmed}`;
+}
+
+type HeldLine = {
+  source?: ProductSource | string;
+  productId?: Types.ObjectId | string;
+  quantity: number;
+  givenQuantity?: number;
+  fulfillmentStatus?: string;
+  substitutes?: Array<{
+    source?: ProductSource | string;
+    productId?: Types.ObjectId | string;
+    quantity: number;
+    unitPrice?: number;
+  }>;
+  unitPrice?: number;
+};
+
+function stockKey(source: string | undefined, productId: unknown): string {
+  const src =
+    source === ProductSource.Hamkor ? ProductSource.Hamkor : ProductSource.Store;
+  return `${src}:${String(productId)}`;
+}
+
+function parseStockKey(key: string): { source: ProductSource; productId: string } {
+  const sep = key.indexOf(':');
+  const raw = sep === -1 ? ProductSource.Store : key.slice(0, sep);
+  const source =
+    raw === ProductSource.Hamkor ? ProductSource.Hamkor : ProductSource.Store;
+  const productId = sep === -1 ? key : key.slice(sep + 1);
+  return { source, productId };
+}
+
+function givenQuantityOf(item: HeldLine): number {
+  if (item.fulfillmentStatus === OrderItemFulfillment.Unavailable) return 0;
+  if (
+    typeof item.givenQuantity === 'number' &&
+    Number.isFinite(item.givenQuantity)
+  ) {
+    return Math.max(0, item.givenQuantity);
+  }
+  return item.quantity;
+}
+
+function collectHeldStock(items: HeldLine[]): Map<string, number> {
+  const map = new Map<string, number>();
+  const add = (
+    source: string | undefined,
+    productId: unknown,
+    qty: number,
+  ) => {
+    if (!qty || !productId) return;
+    const key = stockKey(source, productId);
+    map.set(key, (map.get(key) ?? 0) + qty);
+  };
+  for (const item of items) {
+    add(item.source, item.productId, givenQuantityOf(item));
+    for (const sub of item.substitutes ?? []) {
+      add(sub.source, sub.productId, sub.quantity);
+    }
+  }
+  return map;
+}
+
+function billedSubtotalOf(items: HeldLine[]): number {
+  let sum = 0;
+  for (const item of items) {
+    sum += givenQuantityOf(item) * (item.unitPrice ?? 0);
+    for (const sub of item.substitutes ?? []) {
+      sum += sub.quantity * (sub.unitPrice ?? 0);
+    }
+  }
+  return sum;
+}
+
+function partnerFields(product: {
+  partnerId?: Types.ObjectId | { _id?: Types.ObjectId; name?: string };
+}) {
+  const partnerRef = product.partnerId;
+  const partnerId =
+    partnerRef && typeof partnerRef === 'object' && '_id' in partnerRef
+      ? String(partnerRef._id)
+      : partnerRef
+        ? String(partnerRef)
+        : undefined;
+  const partnerName =
+    partnerRef && typeof partnerRef === 'object' && 'name' in partnerRef
+      ? partnerRef.name
+      : undefined;
+  return { partnerId, partnerName };
 }
 
 @Injectable()
@@ -275,12 +366,8 @@ export class OrdersService {
     }
 
     if (status === OrderStatus.Cancelled && order.status !== OrderStatus.Cancelled) {
-      for (const item of order.items) {
-        await this.inventoryService.release(
-          item.productId.toString(),
-          item.quantity,
-        );
-      }
+      const held = collectHeldStock(order.items as unknown as HeldLine[]);
+      await this.applyHeldStockDiff(held, new Map());
     }
 
     order.status = status;
@@ -294,6 +381,170 @@ export class OrdersService {
 
     this.realtime.emitOrderStatus(order._id.toString(), payload);
     return order.toObject();
+  }
+
+  async updateFulfillment(id: string, dto: UpdateOrderFulfillmentDto) {
+    const order = await this.orderModel.findById(id).exec();
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+    if (
+      order.status === OrderStatus.Cancelled ||
+      order.status === OrderStatus.Delivered
+    ) {
+      throw new BadRequestException(
+        'Yetkazilgan yoki bekor qilingan buyurtmani o‘zgartirib bo‘lmaydi',
+      );
+    }
+    if (dto.items.length !== order.items.length) {
+      throw new BadRequestException('Mahsulotlar soni mos emas');
+    }
+
+    const user = await this.usersService.findById(order.userId.toString());
+    const priceTier = user.priceTier ?? PriceTier.Retail;
+    const rate = await this.exchangeRate.getRate();
+    const oldHeld = collectHeldStock(order.items as unknown as HeldLine[]);
+
+    for (let i = 0; i < order.items.length; i++) {
+      const current = order.items[i];
+      const patch = dto.items[i];
+      const ordered = current.quantity;
+      let given = Math.trunc(Number(patch.givenQuantity));
+      if (!Number.isFinite(given) || given < 0) given = 0;
+      if (given > ordered) {
+        throw new BadRequestException(
+          `${current.name}: berilgan son ${ordered} dan oshmasligi kerak`,
+        );
+      }
+
+      const substitutes: OrderSubstituteItem[] = [];
+      for (const sub of patch.substitutes ?? []) {
+        substitutes.push(
+          await this.buildSubstituteLine(sub.productId, sub.quantity, sub.source, priceTier, rate),
+        );
+      }
+
+      const unavailable =
+        Boolean(patch.unavailable) ||
+        (given === 0 && substitutes.length === 0);
+      if (unavailable) given = 0;
+
+      const fulfillmentStatus =
+        unavailable && substitutes.length === 0
+          ? OrderItemFulfillment.Unavailable
+          : substitutes.length > 0
+            ? OrderItemFulfillment.Substituted
+            : OrderItemFulfillment.Given;
+
+      current.givenQuantity =
+        fulfillmentStatus === OrderItemFulfillment.Unavailable ? 0 : given;
+      current.fulfillmentStatus = fulfillmentStatus;
+      current.substitutes = substitutes;
+    }
+
+    order.markModified('items');
+
+    const newHeld = collectHeldStock(order.items as unknown as HeldLine[]);
+    await this.applyHeldStockDiff(oldHeld, newHeld);
+
+    const billedSubtotal = billedSubtotalOf(
+      order.items as unknown as HeldLine[],
+    );
+    const shippingFee = shippingFeeForTier(billedSubtotal, rate, priceTier);
+
+    if (order.originalTotal == null) {
+      order.originalSubtotal = order.subtotal;
+      order.originalShippingFee = order.shippingFee;
+      order.originalTotal = order.total;
+    }
+
+    order.subtotal = billedSubtotal;
+    order.shippingFee = shippingFee;
+    order.total = billedSubtotal + shippingFee;
+    order.fulfilledAt = new Date();
+    await order.save();
+
+    return order.toObject();
+  }
+
+  private async buildSubstituteLine(
+    productId: string,
+    quantity: number,
+    sourceRaw: ProductSource | undefined,
+    priceTier: PriceTier,
+    rate: number,
+  ): Promise<OrderSubstituteItem> {
+    const source =
+      sourceRaw === ProductSource.Hamkor
+        ? ProductSource.Hamkor
+        : ProductSource.Store;
+    let product;
+    try {
+      product =
+        source === ProductSource.Hamkor
+          ? await this.hamkorProductsService.findById(productId)
+          : await this.productsService.findById(productId);
+    } catch (err) {
+      if (err instanceof NotFoundException) {
+        throw new BadRequestException('Almashtirish mahsuloti topilmadi');
+      }
+      throw err;
+    }
+    if (!isStorefrontReadyProduct(product)) {
+      throw new BadRequestException(
+        `Almashtirish uchun mahsulot mavjud emas: ${product.name}`,
+      );
+    }
+    const { partnerId, partnerName } = partnerFields(
+      product as {
+        partnerId?: Types.ObjectId | { _id?: Types.ObjectId; name?: string };
+      },
+    );
+    return {
+      productId: product._id as Types.ObjectId,
+      name: product.name,
+      slug: product.slug,
+      quantity,
+      unitPrice: resolveUnitPrice(product, priceTier, rate),
+      source,
+      partnerId,
+      partnerName,
+    };
+  }
+
+  private async applyStockDelta(
+    productId: string,
+    delta: number,
+    source: ProductSource,
+  ) {
+    if (!delta || !productId) return;
+    if (source === ProductSource.Hamkor) {
+      await this.hamkorProductsService.adjustStock(productId, delta);
+      return;
+    }
+    if (delta > 0) {
+      await this.inventoryService.release(productId, delta);
+    } else {
+      await this.inventoryService.reserve(productId, -delta);
+    }
+  }
+
+  private async applyHeldStockDiff(
+    oldHeld: Map<string, number>,
+    newHeld: Map<string, number>,
+  ) {
+    // delta > 0: omborga qaytarish; delta < 0: ombordan olish
+    const keys = new Set([...oldHeld.keys(), ...newHeld.keys()]);
+    const deltas: Array<{ key: string; delta: number }> = [];
+    for (const key of keys) {
+      const delta = (oldHeld.get(key) ?? 0) - (newHeld.get(key) ?? 0);
+      if (delta) deltas.push({ key, delta });
+    }
+    deltas.sort((a, b) => b.delta - a.delta);
+    for (const { key, delta } of deltas) {
+      const { source, productId } = parseStockKey(key);
+      await this.applyStockDelta(productId, delta, source);
+    }
   }
 
   /** Unique paid buyers + recent avatars for product social proof. */

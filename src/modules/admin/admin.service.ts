@@ -79,13 +79,62 @@ export class AdminService {
         { $match: { status: { $in: paidStatuses } } },
         { $unwind: '$items' },
         {
+          $addFields: {
+            billedQty: {
+              $cond: [
+                { $eq: ['$items.fulfillmentStatus', 'unavailable'] },
+                0,
+                { $ifNull: ['$items.givenQuantity', '$items.quantity'] },
+              ],
+            },
+          },
+        },
+        {
+          $project: {
+            lines: {
+              $concatArrays: [
+                {
+                  $cond: [
+                    { $gt: ['$billedQty', 0] },
+                    [
+                      {
+                        productId: '$items.productId',
+                        name: '$items.name',
+                        slug: '$items.slug',
+                        quantity: '$billedQty',
+                        unitPrice: '$items.unitPrice',
+                      },
+                    ],
+                    [],
+                  ],
+                },
+                {
+                  $map: {
+                    input: { $ifNull: ['$items.substitutes', []] },
+                    as: 's',
+                    in: {
+                      productId: '$$s.productId',
+                      name: '$$s.name',
+                      slug: '$$s.slug',
+                      quantity: '$$s.quantity',
+                      unitPrice: '$$s.unitPrice',
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+        { $unwind: '$lines' },
+        { $match: { 'lines.quantity': { $gt: 0 } } },
+        {
           $group: {
-            _id: '$items.productId',
-            name: { $first: '$items.name' },
-            slug: { $first: '$items.slug' },
-            quantitySold: { $sum: '$items.quantity' },
+            _id: '$lines.productId',
+            name: { $first: '$lines.name' },
+            slug: { $first: '$lines.slug' },
+            quantitySold: { $sum: '$lines.quantity' },
             revenue: {
-              $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] },
+              $sum: { $multiply: ['$lines.quantity', '$lines.unitPrice'] },
             },
           },
         },

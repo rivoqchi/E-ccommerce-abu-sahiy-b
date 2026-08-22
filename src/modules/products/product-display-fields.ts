@@ -83,8 +83,8 @@ export function maskStorefrontProduct<T extends Record<string, unknown>>(
     }
   }
   if (hiddenFields.includes('price')) {
-    delete next.price;
-    delete next.wholesalePrice;
+    // Narxni javobdan o‘chirmaymiz — katalog/savat tovarni “tayyor” deb qabul qilishi kerak.
+    // Do‘kon UI o‘zi yashiradi. Eski (compare) narx esa chiqmasin.
     delete next.compareAtPrice;
   } else if (hiddenFields.includes('compareAtPrice')) {
     delete next.compareAtPrice;

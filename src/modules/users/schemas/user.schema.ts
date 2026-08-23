@@ -2,8 +2,21 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 import { Role } from '../../../common/enums/role.enum';
 import { PriceTier } from '../../../common/enums/price-tier.enum';
+import { ApprovalStatus } from '../../../common/enums/approval-status.enum';
 
 export type UserDocument = HydratedDocument<User>;
+
+@Schema({ _id: false })
+export class ApprovalNotifyMessage {
+  @Prop({ required: true })
+  chatId!: string;
+
+  @Prop({ required: true })
+  messageId!: number;
+}
+
+export const ApprovalNotifyMessageSchema =
+  SchemaFactory.createForClass(ApprovalNotifyMessage);
 
 @Schema({ _id: false })
 export class Address {
@@ -79,6 +92,31 @@ export class User {
 
   @Prop({ default: true })
   isActive!: boolean;
+
+  /** Yo‘q = eski user (approved). Yangi bot userlari pending. */
+  @Prop({ type: String, enum: ApprovalStatus })
+  approvalStatus?: ApprovalStatus;
+
+  @Prop()
+  approvedById?: string;
+
+  @Prop({ trim: true })
+  approvedByName?: string;
+
+  @Prop()
+  approvedAt?: Date;
+
+  @Prop()
+  blockedById?: string;
+
+  @Prop({ trim: true })
+  blockedByName?: string;
+
+  @Prop()
+  blockedAt?: Date;
+
+  @Prop({ type: [ApprovalNotifyMessageSchema], default: [] })
+  approvalNotifyMessages!: ApprovalNotifyMessage[];
 
   @Prop()
   refreshTokenHash?: string;

@@ -41,11 +41,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       }
       throw err;
     }
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
-
     const ensured = await this.usersService.ensureSuperAdmin(user);
+    this.usersService.assertCanLogin(ensured);
 
     return {
       userId: ensured._id.toString(),

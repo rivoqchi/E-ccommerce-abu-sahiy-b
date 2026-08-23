@@ -67,7 +67,7 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const user = await this.usersService.findByEmail(dto.email);
-    if (!user || !user.isActive || !user.passwordHash) {
+    if (!user || !user.passwordHash) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -75,6 +75,7 @@ export class AuthService {
     if (!valid) {
       throw new UnauthorizedException('Invalid credentials');
     }
+    this.usersService.assertCanLogin(user);
 
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
@@ -164,9 +165,7 @@ export class AuthService {
       const promoted = await this.usersService.promoteToAdminByPhone(phone);
       if (promoted) user = promoted;
     }
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
+    this.usersService.assertCanLogin(user);
 
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
@@ -200,10 +199,7 @@ export class AuthService {
     });
 
     user = await this.usersService.ensureSuperAdmin(user);
-
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
+    this.usersService.assertCanLogin(user);
 
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
@@ -257,9 +253,7 @@ export class AuthService {
       if (promoted) user = promoted;
     }
 
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
+    this.usersService.assertCanLogin(user);
 
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
@@ -284,9 +278,7 @@ export class AuthService {
         'Avval botda telefon raqamingizni yuboring',
       );
     }
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
+    this.usersService.assertCanLogin(user);
 
     const ttl =
       this.configService.get<number>('telegram.otpTtlSeconds') ?? 600;
@@ -347,9 +339,7 @@ export class AuthService {
 
     let user = await this.usersService.findById(payload.userId);
     user = await this.usersService.ensureSuperAdmin(user);
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
+    this.usersService.assertCanLogin(user);
 
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
@@ -387,9 +377,7 @@ export class AuthService {
     user = await this.usersService.ensureSuperAdmin(user);
     const promoted = await this.usersService.promoteToAdminByPhone(phone);
     if (promoted) user = promoted;
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
+    this.usersService.assertCanLogin(user);
 
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
@@ -427,9 +415,7 @@ export class AuthService {
         'Avval botda telefon raqamingizni yuboring',
       );
     }
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
+    this.usersService.assertCanLogin(user);
 
     const token = createHash('sha256')
       .update(`${telegramId}:${randomBytes(32).toString('hex')}`)
@@ -463,9 +449,7 @@ export class AuthService {
 
     let user = await this.usersService.findById(payload.userId);
     user = await this.usersService.ensureSuperAdmin(user);
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
-    }
+    this.usersService.assertCanLogin(user);
 
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
@@ -496,6 +480,7 @@ export class AuthService {
     }
 
     user = await this.usersService.ensureSuperAdmin(user);
+    this.usersService.assertCanLogin(user);
     const tokens = await this.issueTokens(user);
     await this.persistRefreshToken(user._id.toString(), tokens.refreshToken);
     return tokens;

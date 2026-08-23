@@ -13,6 +13,17 @@ export const texts = {
     'Assalomu alaykum! 👋\n\nQuyidagi menyudan kerakli bo‘limni tanlang.\n\n• Open Web — sayt ochiladi va avtomatik kirasiz (kod shart emas)\n• Kod yuborish — web /login uchun 6 xonali kod',
   registered:
     'Rahmat! Raqamingiz qabul qilindi. Siz saytdan ro‘yxatdan o‘tdingiz.',
+  waitingApproval:
+    'Rahmat! Profilingiz qabul qilindi.\n\nAdmin tasdiqlashini kuting — shundan keyin Mini App, Kod yuborish, Open Web va Buyurtmalarim tugmalari ochiladi.',
+  alreadyWaiting:
+    'Profilingiz hali tasdiqlanmagan. Admin tasdiqlashini kuting.',
+  blocked: 'Profilingiz bloklangan.',
+  profileApproved:
+    'Profilingiz tasdiqlandi. Quyidagi menyudan kerakli bo‘limni tanlang.\n\n• Open Web — sayt ochiladi va avtomatik kirasiz (kod shart emas)\n• Kod yuborish — web /login uchun 6 xonali kod',
+  notAdmin: 'Faqat admin tasdiqlashi yoki bloklashi mumkin.',
+  alreadyDecided: 'Bu profil allaqachon ko‘rib chiqilgan.',
+  approvedBy: (name: string) => `${name} tasdiqlagan`,
+  blockedBy: (name: string) => `${name} bloklagan`,
   contactRejected:
     'Faqat o‘zingizning Telegram raqamingizni yuboring. «Raqamni yuborish» tugmasidan foydalaning.',
   contactRequired:

@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
@@ -14,6 +15,13 @@ import { AddressDto } from './dto/address.dto';
 import { PriceTier } from '../../common/enums/price-tier.enum';
 import { AdminUpdateUserDto } from './dto/admin-update-user.dto';
 import { R2StorageService } from '../uploads/r2-storage.service';
+import {
+  ApprovalStatus,
+  approvalActorName,
+  isApprovedForAccess,
+  resolveApprovalStatus,
+} from '../../common/enums/approval-status.enum';
+import { AuthUser } from '../../common/decorators/current-user.decorator';
 
 @Injectable()
 export class UsersService {
@@ -40,6 +48,7 @@ export class UsersService {
       fullName: data.fullName,
       role: data.role ?? Role.Customer,
       priceTier: PriceTier.Retail,
+      approvalStatus: ApprovalStatus.Approved,
     });
   }
 
@@ -105,6 +114,7 @@ export class UsersService {
       lastName: profile?.lastName?.trim(),
       role: Role.Customer,
       priceTier: PriceTier.Retail,
+      approvalStatus: ApprovalStatus.Pending,
     });
   }
 
@@ -159,6 +169,7 @@ export class UsersService {
       avatarUrl: data.avatarUrl,
       role: Role.Customer,
       priceTier: PriceTier.Retail,
+      approvalStatus: ApprovalStatus.Pending,
     });
   }
 
@@ -213,10 +224,6 @@ export class UsersService {
       }
       if (String(user.telegramId ?? '') !== telegramId) {
         user.telegramId = telegramId;
-        dirty = true;
-      }
-      if (!user.isActive) {
-        user.isActive = true;
         dirty = true;
       }
       if (dirty) {
@@ -310,6 +317,7 @@ export class UsersService {
           username,
           role: Role.Customer,
           priceTier: PriceTier.Retail,
+          approvalStatus: ApprovalStatus.Pending,
         });
         return this.ensureSuperAdmin(created);
       } catch (err) {
@@ -630,6 +638,7 @@ export class UsersService {
       priceTier: user.priceTier ?? PriceTier.Retail,
       addresses: user.addresses,
       isActive: user.isActive,
+      ...this.approvalPublicFields(user),
       createdAt: (user as UserDocument & { createdAt?: Date }).createdAt,
     };
   }
@@ -666,18 +675,111 @@ export class UsersService {
       role: u.role,
       priceTier: (u as { priceTier?: PriceTier }).priceTier ?? PriceTier.Retail,
       isActive: u.isActive,
+      ...this.approvalPublicFields(u),
       createdAt: (u as { createdAt?: Date }).createdAt,
     }));
   }
 
-  async adminUpdateUser(id: string, dto: AdminUpdateUserDto) {
+  async adminUpdateUser(id: string, dto: AdminUpdateUserDto, actor?: AuthUser) {
+    const { approvalStatus, isActive, ...rest } = dto;
+
+    if (approvalStatus === ApprovalStatus.Approved) {
+      await this.approveUser(id, actor);
+    } else if (approvalStatus === ApprovalStatus.Blocked) {
+      await this.blockUser(id, actor);
+    } else if (isActive === false) {
+      await this.blockUser(id, actor);
+    } else if (isActive === true) {
+      await this.approveUser(id, actor);
+    }
+
+    if (Object.keys(rest).length) {
+      const user = await this.userModel
+        .findByIdAndUpdate(id, { $set: rest }, { new: true })
+        .exec();
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+      return this.toPublic(user);
+    }
+
+    return this.toPublic(await this.findById(id));
+  }
+
+  async approveUser(id: string, actor?: AuthUser): Promise<UserDocument> {
+    const user = await this.findById(id);
+    const name = await this.resolveActorName(actor);
+    user.approvalStatus = ApprovalStatus.Approved;
+    user.isActive = true;
+    user.approvedById = actor?.userId;
+    user.approvedByName = name;
+    user.approvedAt = new Date();
+    user.blockedById = undefined;
+    user.blockedByName = undefined;
+    user.blockedAt = undefined;
+    await user.save();
+    return user;
+  }
+
+  async blockUser(id: string, actor?: AuthUser): Promise<UserDocument> {
+    const user = await this.findById(id);
+    const name = await this.resolveActorName(actor);
+    user.approvalStatus = ApprovalStatus.Blocked;
+    user.isActive = false;
+    user.blockedById = actor?.userId;
+    user.blockedByName = name;
+    user.blockedAt = new Date();
+    await user.save();
+    return user;
+  }
+
+  async setApprovalNotifyMessages(
+    id: string,
+    messages: { chatId: string; messageId: number }[],
+  ) {
     const user = await this.userModel
-      .findByIdAndUpdate(id, { $set: dto }, { new: true })
+      .findByIdAndUpdate(
+        id,
+        { $set: { approvalNotifyMessages: messages } },
+        { new: true },
+      )
       .exec();
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    return this.toPublic(user);
+    return user;
+  }
+
+  async findAdminsWithTelegram(): Promise<UserDocument[]> {
+    return this.userModel
+      .find({
+        role: Role.Admin,
+        telegramId: { $exists: true, $nin: [null, ''] },
+      })
+      .exec();
+  }
+
+  needsApprovalNotify(user: UserDocument): boolean {
+    return (
+      resolveApprovalStatus(user) === ApprovalStatus.Pending &&
+      !(user.approvalNotifyMessages?.length > 0)
+    );
+  }
+
+  assertCanLogin(user: {
+    approvalStatus?: ApprovalStatus | string;
+    isActive?: boolean;
+  }) {
+    const status = resolveApprovalStatus(user);
+    if (status === ApprovalStatus.Pending) {
+      throw new UnauthorizedException('Profilingiz hali tasdiqlanmagan');
+    }
+    if (status === ApprovalStatus.Blocked || user.isActive === false) {
+      throw new UnauthorizedException('Profilingiz bloklangan');
+    }
+    if (!isApprovedForAccess(user)) {
+      throw new UnauthorizedException('Profilingiz hali tasdiqlanmagan');
+    }
   }
 
   async promoteToAdminByPhone(phone: string) {
@@ -689,7 +791,14 @@ export class UsersService {
         {
           $or: [{ phone: normalized }, { phone: phone.trim() }],
         },
-        { $set: { role: Role.Admin, phone: normalized } },
+        {
+          $set: {
+            role: Role.Admin,
+            phone: normalized,
+            approvalStatus: ApprovalStatus.Approved,
+            isActive: true,
+          },
+        },
         { new: true },
       )
       .exec();
@@ -701,13 +810,61 @@ export class UsersService {
       this.configService.get<string>('telegram.superAdminPhone') ?? '',
     );
     if (!superPhone) return user;
-    if (user.role === Role.Admin) return user;
 
     const userPhone = normalizePhone(user.phone ?? '');
     if (!userPhone || userPhone !== superPhone) return user;
 
-    const promoted = await this.promoteToAdminByPhone(superPhone);
-    return promoted ?? user;
+    if (user.role !== Role.Admin) {
+      const promoted = await this.promoteToAdminByPhone(superPhone);
+      return this.ensureApprovedRecord(promoted ?? user);
+    }
+    return this.ensureApprovedRecord(user);
+  }
+
+  private async ensureApprovedRecord(
+    user: UserDocument,
+  ): Promise<UserDocument> {
+    if (isApprovedForAccess(user)) return user;
+    user.approvalStatus = ApprovalStatus.Approved;
+    user.isActive = true;
+    if (!user.approvedByName) {
+      user.approvedByName = 'Tizim';
+      user.approvedAt = new Date();
+    }
+    await user.save();
+    return user;
+  }
+
+  private async resolveActorName(actor?: AuthUser): Promise<string> {
+    if (!actor?.userId) return 'Admin';
+    try {
+      const admin = await this.findById(actor.userId);
+      return approvalActorName(admin);
+    } catch {
+      return 'Admin';
+    }
+  }
+
+  private approvalPublicFields(user: {
+    approvalStatus?: ApprovalStatus | string;
+    isActive?: boolean;
+    approvedById?: string;
+    approvedByName?: string;
+    approvedAt?: Date;
+    blockedById?: string;
+    blockedByName?: string;
+    blockedAt?: Date;
+  }) {
+    const approvalStatus = resolveApprovalStatus(user);
+    return {
+      approvalStatus,
+      approvedById: user.approvedById ?? null,
+      approvedByName: user.approvedByName ?? null,
+      approvedAt: user.approvedAt ?? null,
+      blockedById: user.blockedById ?? null,
+      blockedByName: user.blockedByName ?? null,
+      blockedAt: user.blockedAt ?? null,
+    };
   }
 }
 

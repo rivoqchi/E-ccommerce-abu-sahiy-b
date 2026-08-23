@@ -11,11 +11,19 @@ import { join } from 'path';
 import { Bot, InlineKeyboard, Keyboard, Context, InputFile } from 'grammy';
 import type { Update } from 'grammy/types';
 import { randomBytes } from 'crypto';
+import { Types } from 'mongoose';
 import { UsersService } from '../users/users.service';
 import { OrdersService } from '../orders/orders.service';
 import { AuthService } from '../auth/auth.service';
 import { RedisService } from '../redis/redis.service';
 import { ProductsService } from '../products/products.service';
+import { UserDocument } from '../users/schemas/user.schema';
+import { Role } from '../../common/enums/role.enum';
+import {
+  ApprovalStatus,
+  resolveApprovalStatus,
+} from '../../common/enums/approval-status.enum';
+import { AuthUser } from '../../common/decorators/current-user.decorator';
 import {
   BTN_MINI_APP,
   BTN_MY_ORDERS,
@@ -471,6 +479,12 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       await ctx.answerCallbackQuery().catch(() => undefined);
       await this.onMiniAppText(ctx);
     });
+    bot.callbackQuery(/^approve:(.+)$/, (ctx) =>
+      this.onApprovalCallback(ctx, 'approve'),
+    );
+    bot.callbackQuery(/^block:(.+)$/, (ctx) =>
+      this.onApprovalCallback(ctx, 'block'),
+    );
     bot.on('message:text', (ctx) => this.onFallbackText(ctx));
   }
 
@@ -480,7 +494,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
 
     const user = await this.usersService.findByTelegramId(String(telegramId));
     if (user?.phone) {
-      await this.replyWithMenu(ctx, texts.welcomeReady, true);
+      await this.replyByAccess(ctx, user);
       return;
     }
 
@@ -545,8 +559,9 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    let user: UserDocument | null = null;
     try {
-      await this.usersService.registerFromBotContact({
+      user = await this.usersService.registerFromBotContact({
         telegramId: String(from.id),
         phone: contact.phone_number,
         firstName: contact.first_name || from.first_name,
@@ -564,7 +579,10 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `registerFromBotContact duplicate ignored telegramId=${from.id}`,
           );
-          await this.replyWithMenu(ctx, texts.registered, true);
+          if (this.usersService.needsApprovalNotify(existing)) {
+            await this.notifyAdminsOfPendingUser(existing._id.toString());
+          }
+          await this.replyByAccess(ctx, existing);
           return;
         }
       }
@@ -589,20 +607,21 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.replyWithMenu(ctx, texts.registered, true);
-  }
-
-  private async onMyOrders(ctx: Context) {
-    const telegramId = ctx.from?.id;
-    if (telegramId == null) return;
-
-    const user = await this.usersService.findByTelegramId(String(telegramId));
-    if (!user?.phone) {
-      await ctx.reply(texts.contactRequired, {
+    if (!user) {
+      await ctx.reply(texts.registerFailed, {
         reply_markup: this.phoneRequestKeyboard(),
       });
       return;
     }
+    if (this.usersService.needsApprovalNotify(user)) {
+      await this.notifyAdminsOfPendingUser(user._id.toString());
+    }
+    await this.replyByAccess(ctx, user, { justRegistered: true });
+  }
+
+  private async onMyOrders(ctx: Context) {
+    const user = await this.requireApprovedUser(ctx);
+    if (!user) return;
 
     const orders = await this.ordersService.findMine(user._id.toString());
     const recent = orders.slice(0, 10);
@@ -673,16 +692,10 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async onSendCode(ctx: Context) {
-    const telegramId = ctx.from?.id;
-    if (telegramId == null) return;
-
-    const user = await this.usersService.findByTelegramId(String(telegramId));
-    if (!user?.phone) {
-      await ctx.reply(texts.contactRequired, {
-        reply_markup: this.phoneRequestKeyboard(),
-      });
-      return;
-    }
+    const user = await this.requireApprovedUser(ctx);
+    if (!user) return;
+    const telegramId = user.telegramId;
+    if (!telegramId) return;
 
     try {
       const { code } = await this.authService.issueBotLoginCode(
@@ -723,16 +736,8 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const telegramId = ctx.from?.id;
-    if (telegramId == null) return;
-
-    const user = await this.usersService.findByTelegramId(String(telegramId));
-    if (!user?.phone) {
-      await ctx.reply(texts.contactRequired, {
-        reply_markup: this.phoneRequestKeyboard(),
-      });
-      return;
-    }
+    const user = await this.requireApprovedUser(ctx);
+    if (!user) return;
 
     await this.replyWithMenu(ctx, texts.menuHint, false);
   }
@@ -758,38 +763,21 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async onOpenWebText(ctx: Context) {
-    const telegramId = ctx.from?.id;
-    if (telegramId == null) return;
-
-    const user = await this.usersService.findByTelegramId(String(telegramId));
-    if (!user?.phone) {
-      await ctx.reply(texts.contactRequired, {
-        reply_markup: this.phoneRequestKeyboard(),
-      });
-      return;
-    }
-
-    await this.sendOpenWebLinkFallback(ctx, String(telegramId));
+    const user = await this.requireApprovedUser(ctx);
+    if (!user?.telegramId) return;
+    await this.sendOpenWebLinkFallback(ctx, user.telegramId);
   }
 
   private async onOpenWebCallback(ctx: Context) {
     await ctx.answerCallbackQuery().catch(() => undefined);
-    const telegramId = ctx.from?.id;
-    if (telegramId == null) return;
-
-    const user = await this.usersService.findByTelegramId(String(telegramId));
-    if (!user?.phone) {
-      await ctx.reply(texts.contactRequired, {
-        reply_markup: this.phoneRequestKeyboard(),
-      });
-      return;
-    }
-
-    await this.sendOpenWebLinkFallback(ctx, String(telegramId));
+    const user = await this.requireApprovedUser(ctx);
+    if (!user?.telegramId) return;
+    await this.sendOpenWebLinkFallback(ctx, user.telegramId);
   }
 
   private async onMiniAppText(ctx: Context) {
-    // Eski text tugma qolgan bo‘lsa — web_app keyboardni qayta o‘rnatamiz
+    const user = await this.requireApprovedUser(ctx);
+    if (!user) return;
     await ctx.reply(
       'Mini App tugmasini qayta bosing — Telegram ichida ochiladi.',
       { reply_markup: this.mainReplyKeyboard() },
@@ -832,18 +820,14 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** BotFather «Open» / chat menu button → Mini App */
+  /** Default chat menu — Mini App faqat tasdiqlangan chatlarga */
   private async syncMiniAppMenuButton() {
-    if (!this.bot || !this.isHttpsUrl(this.miniAppUrl)) return;
+    if (!this.bot) return;
     try {
       await this.bot.api.setChatMenuButton({
-        menu_button: {
-          type: 'web_app',
-          text: 'Mini App',
-          web_app: { url: this.miniAppUrl },
-        },
+        menu_button: { type: 'commands' },
       });
-      this.logger.log(`Telegram menu button → ${this.miniAppUrl}`);
+      this.logger.log('Telegram default menu button → commands');
     } catch (err) {
       this.logger.warn(
         `setChatMenuButton: ${
@@ -863,6 +847,275 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       .resized()
       .persistent();
   }
+
+  private async requireApprovedUser(
+    ctx: Context,
+  ): Promise<UserDocument | null> {
+    const telegramId = ctx.from?.id;
+    if (telegramId == null) return null;
+
+    const user = await this.usersService.findByTelegramId(String(telegramId));
+    if (!user?.phone) {
+      await ctx.reply(texts.contactRequired, {
+        reply_markup: this.phoneRequestKeyboard(),
+      });
+      return null;
+    }
+
+    const status = resolveApprovalStatus(user);
+    if (status === ApprovalStatus.Pending) {
+      await this.replyWithoutMenu(ctx, texts.alreadyWaiting);
+      await this.setChatMiniAppButton(Number(telegramId), false);
+      return null;
+    }
+    if (status === ApprovalStatus.Blocked) {
+      await this.replyWithoutMenu(ctx, texts.blocked);
+      await this.setChatMiniAppButton(Number(telegramId), false);
+      return null;
+    }
+    return user;
+  }
+
+  private async replyByAccess(
+    ctx: Context,
+    user: UserDocument,
+    opts?: { justRegistered?: boolean },
+  ) {
+    const telegramId = user.telegramId;
+    const status = resolveApprovalStatus(user);
+    if (status === ApprovalStatus.Pending) {
+      await this.replyWithoutMenu(
+        ctx,
+        opts?.justRegistered ? texts.waitingApproval : texts.alreadyWaiting,
+      );
+      if (telegramId) {
+        await this.setChatMiniAppButton(Number(telegramId), false);
+      }
+      return;
+    }
+    if (status === ApprovalStatus.Blocked) {
+      await this.replyWithoutMenu(ctx, texts.blocked);
+      if (telegramId) {
+        await this.setChatMiniAppButton(Number(telegramId), false);
+      }
+      return;
+    }
+    await this.replyWithMenu(
+      ctx,
+      opts?.justRegistered ? texts.profileApproved : texts.welcomeReady,
+    );
+    if (telegramId) {
+      await this.setChatMiniAppButton(Number(telegramId), true);
+    }
+  }
+
+  private async replyWithoutMenu(ctx: Context, message: string) {
+    await ctx.reply(message, {
+      reply_markup: { remove_keyboard: true },
+    });
+  }
+
+  async notifyAdminsOfPendingUser(userId: string): Promise<void> {
+    if (!this.bot) return;
+    const user = await this.usersService.findById(userId);
+    if (!this.usersService.needsApprovalNotify(user)) return;
+
+    const admins = await this.usersService.findAdminsWithTelegram();
+    const messages: { chatId: string; messageId: number }[] = [];
+    const text = this.formatAdminProfileCard(user);
+
+    for (const admin of admins) {
+      if (!admin.telegramId || admin.telegramId === user.telegramId) continue;
+      try {
+        const sent = await this.bot.api.sendMessage(
+          admin.telegramId,
+          text,
+          { reply_markup: this.approvalKeyboard(user._id.toString()) },
+        );
+        messages.push({
+          chatId: String(sent.chat.id),
+          messageId: sent.message_id,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `notify admin ${admin.telegramId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    if (messages.length) {
+      await this.usersService.setApprovalNotifyMessages(userId, messages);
+    }
+  }
+
+  async applyAccessDecision(userId: string): Promise<void> {
+    const user = await this.usersService.findById(userId);
+    await this.syncAdminApprovalMessages(user);
+    await this.notifySubjectOfDecision(user);
+  }
+
+  private async onApprovalCallback(
+    ctx: Context,
+    action: 'approve' | 'block',
+  ) {
+    const match = ctx.match;
+    const userId = Array.isArray(match) ? match[1] : undefined;
+    if (!userId || !isMongoId(userId)) {
+      await ctx.answerCallbackQuery().catch(() => undefined);
+      return;
+    }
+
+    const actorDoc = ctx.from?.id
+      ? await this.usersService.findByTelegramId(String(ctx.from.id))
+      : null;
+    if (!actorDoc || actorDoc.role !== Role.Admin) {
+      await ctx
+        .answerCallbackQuery({ text: texts.notAdmin, show_alert: true })
+        .catch(() => undefined);
+      return;
+    }
+
+    const target = await this.usersService.findById(userId);
+    if (resolveApprovalStatus(target) !== ApprovalStatus.Pending) {
+      await ctx
+        .answerCallbackQuery({ text: texts.alreadyDecided })
+        .catch(() => undefined);
+      await this.syncAdminApprovalMessages(target);
+      return;
+    }
+
+    const actor = this.toAuthActor(actorDoc);
+    if (action === 'approve') {
+      await this.usersService.approveUser(userId, actor);
+    } else {
+      await this.usersService.blockUser(userId, actor);
+    }
+
+    await ctx
+      .answerCallbackQuery({
+        text: action === 'approve' ? 'Tasdiqlandi' : 'Bloklandi',
+      })
+      .catch(() => undefined);
+    await this.applyAccessDecision(userId);
+  }
+
+  private async syncAdminApprovalMessages(user: UserDocument) {
+    if (!this.bot) return;
+    const status = resolveApprovalStatus(user);
+    let footer = '';
+    if (status === ApprovalStatus.Approved && user.approvedByName) {
+      footer = texts.approvedBy(user.approvedByName);
+    } else if (status === ApprovalStatus.Blocked && user.blockedByName) {
+      footer = texts.blockedBy(user.blockedByName);
+    }
+    const text = this.formatAdminProfileCard(user, footer);
+
+    for (const msg of user.approvalNotifyMessages ?? []) {
+      try {
+        await this.bot.api.editMessageText(msg.chatId, msg.messageId, text, {
+          reply_markup: { inline_keyboard: [] },
+        });
+      } catch (err) {
+        this.logger.warn(
+          `edit approval message ${msg.chatId}/${msg.messageId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+  }
+
+  private async notifySubjectOfDecision(user: UserDocument) {
+    if (!this.bot || !user.telegramId) return;
+    const chatId = Number(user.telegramId);
+    if (!Number.isFinite(chatId)) return;
+
+    const status = resolveApprovalStatus(user);
+    try {
+      if (status === ApprovalStatus.Approved) {
+        await this.bot.api.sendMessage(chatId, texts.profileApproved, {
+          reply_markup: this.mainReplyKeyboard(),
+        });
+        await this.setChatMiniAppButton(chatId, true);
+        return;
+      }
+      if (status === ApprovalStatus.Blocked) {
+        await this.bot.api.sendMessage(chatId, texts.blocked, {
+          reply_markup: { remove_keyboard: true },
+        });
+        await this.setChatMiniAppButton(chatId, false);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `notify subject ${user.telegramId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  private async setChatMiniAppButton(chatId: number, enabled: boolean) {
+    if (!this.bot || !Number.isFinite(chatId)) return;
+    try {
+      if (enabled && this.isHttpsUrl(this.miniAppUrl)) {
+        await this.bot.api.setChatMenuButton({
+          chat_id: chatId,
+          menu_button: {
+            type: 'web_app',
+            text: 'Mini App',
+            web_app: { url: this.miniAppUrl },
+          },
+        });
+        return;
+      }
+      await this.bot.api.setChatMenuButton({
+        chat_id: chatId,
+        menu_button: { type: 'commands' },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `setChatMenuButton chat=${chatId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  private formatAdminProfileCard(user: UserDocument, footer?: string) {
+    const lines = [
+      'Yangi profil',
+      '',
+      `Ism: ${user.fullName || '—'}`,
+      `Username: ${user.username ? `@${user.username}` : '—'}`,
+      `Telefon: ${user.phone || '—'}`,
+    ];
+    if (footer) {
+      lines.push('', footer);
+    }
+    return lines.join('\n');
+  }
+
+  private approvalKeyboard(userId: string) {
+    return new InlineKeyboard()
+      .text('Tasdiqlash', `approve:${userId}`)
+      .text('Bloklash', `block:${userId}`);
+  }
+
+  private toAuthActor(user: UserDocument): AuthUser {
+    return {
+      userId: user._id.toString(),
+      email: user.email ?? null,
+      phone: user.phone ?? null,
+      telegramId: user.telegramId ?? null,
+      role: user.role,
+    };
+  }
+}
+
+function isMongoId(id: string): boolean {
+  return Types.ObjectId.isValid(id) && String(new Types.ObjectId(id)) === id;
 }
 
 function formatMoney(amount: number, currency?: string): string {

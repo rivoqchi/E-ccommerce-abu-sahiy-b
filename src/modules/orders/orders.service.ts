@@ -191,11 +191,7 @@ export class OrdersService {
 
     await this.cartService.clear(userId, dto.guestId);
 
-    this.realtime.emitAdminAlert({
-      type: 'new_order',
-      orderId: order._id.toString(),
-      total: order.total,
-    });
+    this.emitNewOrderAlert(order);
 
     return order.toObject();
   }
@@ -320,11 +316,7 @@ export class OrdersService {
       notes: dto.notes?.trim() || undefined,
     });
 
-    this.realtime.emitAdminAlert({
-      type: 'new_order',
-      orderId: order._id.toString(),
-      total: order.total,
-    });
+    this.emitNewOrderAlert(order);
 
     return {
       ...order.toObject(),
@@ -569,6 +561,23 @@ export class OrdersService {
     const pad = (n: number) => n.toString().padStart(2, '0');
     const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     return { buffer, filename: `buyurtmalar_${stamp}.xlsx` };
+  }
+
+  private emitNewOrderAlert(order: {
+    _id: Types.ObjectId;
+    total: number;
+    currency?: string;
+    items?: unknown[];
+    shippingAddress?: { fullName?: string };
+  }) {
+    this.realtime.emitAdminAlert({
+      type: 'new_order',
+      orderId: order._id.toString(),
+      total: order.total,
+      currency: order.currency,
+      customerName: order.shippingAddress?.fullName ?? '',
+      itemCount: order.items?.length ?? 0,
+    });
   }
 
   private collectImageUrls(

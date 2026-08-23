@@ -162,7 +162,7 @@ export async function buildOrderWorkbook(
       fitToHeight: 0,
       margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
     },
-    views: [{ state: 'frozen', ySplit: 11, showGridLines: false }],
+    views: [{ state: 'normal', showGridLines: false }],
   });
 
   ws.columns = [
@@ -387,7 +387,7 @@ export async function buildOrdersListWorkbook(
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Sami';
   const ws = wb.addWorksheet('Buyurtmalar', {
-    views: [{ state: 'frozen', ySplit: 2, showGridLines: false }],
+    views: [{ state: 'normal', showGridLines: false }],
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1 },
   });
 

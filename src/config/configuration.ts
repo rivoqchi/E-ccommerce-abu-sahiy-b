@@ -135,6 +135,9 @@ export default () => {
     openWebUrl: resolveOpenWebUrl(frontendUrl, miniAppUrl),
   },
 
+  /** local = disk (uploads/), r2 = Cloudflare R2 */
+  storageDriver: optionalEnv('STORAGE_DRIVER', 'r2').toLowerCase(),
+
   /** Cloudflare R2 (S3-compatible) media storage */
   r2: {
     accountId: requireEnv('R2_ACCOUNT_ID'),

@@ -5,10 +5,9 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  PutObjectCommand,
-  S3Client,
-} from '@aws-sdk/client-s3';
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { mkdir, writeFile } from 'fs/promises';
+import { dirname, join } from 'path';
 
 export type R2PutInput = {
   /** Object key without leading slash, e.g. products/uuid.jpg */
@@ -23,10 +22,23 @@ export class R2StorageService implements OnModuleInit {
   private client!: S3Client;
   private bucket!: string;
   private publicBaseUrl!: string;
+  private useLocal = false;
+  private localBaseDir = '';
 
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit() {
+    this.useLocal = this.configService.get<string>('storageDriver') === 'local';
+
+    if (this.useLocal) {
+      this.localBaseDir = join(process.cwd(), 'uploads');
+      this.publicBaseUrl = `${this.configService
+        .getOrThrow<string>('appUrl')
+        .replace(/\/$/, '')}/uploads`;
+      this.logger.log(`Local file storage enabled (${this.localBaseDir})`);
+      return;
+    }
+
     const r2 = this.configService.getOrThrow<{
       accountId: string;
       accessKeyId: string;
@@ -58,6 +70,21 @@ export class R2StorageService implements OnModuleInit {
 
   async putObject(input: R2PutInput): Promise<string> {
     const key = input.key.replace(/^\/+/, '');
+
+    if (this.useLocal) {
+      try {
+        const filePath = join(this.localBaseDir, key);
+        await mkdir(dirname(filePath), { recursive: true });
+        await writeFile(filePath, input.body);
+      } catch (err) {
+        this.logger.error(`Local storage failed for ${key}: ${String(err)}`);
+        throw new InternalServerErrorException(
+          'Faylni saqlash muvaffaqiyatsiz (local storage)',
+        );
+      }
+      return this.publicUrlFor(key);
+    }
+
     try {
       await this.client.send(
         new PutObjectCommand({

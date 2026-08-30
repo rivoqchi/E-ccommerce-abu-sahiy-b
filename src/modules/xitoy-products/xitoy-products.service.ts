@@ -5,6 +5,31 @@ import { RealtimeService } from '../realtime/realtime.service';
 import { CreateXitoyProductDto } from './dto/create-xitoy-product.dto';
 import { UpdateXitoyProductDto } from './dto/update-xitoy-product.dto';
 import { XitoyProduct } from './schemas/xitoy-product.schema';
+import { calculateXitoyCostPrice } from './xitoy-pricing';
+
+function withComputedPricing(
+  dto: CreateXitoyProductDto | UpdateXitoyProductDto,
+  existing?: XitoyProduct,
+) {
+  const chinaPriceYuan = dto.chinaPriceYuan ?? existing!.chinaPriceYuan;
+  const cubicM3 = dto.cubicM3 ?? existing!.cubicM3;
+  const weightKg = dto.weightKg ?? existing!.weightKg;
+  const yuanRate = dto.yuanRate ?? existing!.yuanRate;
+  const customsFee = dto.customsFee ?? existing!.customsFee;
+
+  const pricing = calculateXitoyCostPrice({
+    chinaPriceYuan,
+    cubicM3,
+    weightKg,
+    yuanRate,
+    customsFee,
+  });
+
+  return {
+    wholesalePrice: pricing.costPriceUsd,
+    costPriceYuan: pricing.costPriceYuan,
+  };
+}
 
 @Injectable()
 export class XitoyProductsService {
@@ -15,11 +40,29 @@ export class XitoyProductsService {
   ) {}
 
   async findAll() {
-    return this.xitoyProductModel
+    const items = await this.xitoyProductModel
       .find()
       .sort({ createdAt: -1 })
       .lean()
       .exec();
+
+    return items.map((item) => this.enrichPricing(item));
+  }
+
+  private enrichPricing(item: XitoyProduct & { _id: unknown }) {
+    const pricing = calculateXitoyCostPrice({
+      chinaPriceYuan: item.chinaPriceYuan,
+      cubicM3: item.cubicM3,
+      weightKg: item.weightKg,
+      yuanRate: item.yuanRate,
+      customsFee: item.customsFee,
+    });
+
+    return {
+      ...item,
+      wholesalePrice: pricing.costPriceUsd,
+      costPriceYuan: pricing.costPriceYuan,
+    };
   }
 
   async findById(id: string) {
@@ -29,13 +72,22 @@ export class XitoyProductsService {
   }
 
   async create(dto: CreateXitoyProductDto) {
+    const pricing = calculateXitoyCostPrice({
+      chinaPriceYuan: dto.chinaPriceYuan,
+      cubicM3: dto.cubicM3,
+      weightKg: dto.weightKg,
+      yuanRate: dto.yuanRate,
+      customsFee: dto.customsFee,
+    });
+
     const item = await this.xitoyProductModel.create({
       imageUrl: dto.imageUrl.trim(),
       name: dto.name.trim(),
       chinaPriceYuan: dto.chinaPriceYuan,
       cubicM3: dto.cubicM3,
       weightKg: dto.weightKg,
-      wholesalePrice: dto.wholesalePrice,
+      wholesalePrice: pricing.costPriceUsd,
+      costPriceYuan: pricing.costPriceYuan,
       yuanRate: dto.yuanRate,
       customsFee: dto.customsFee,
     });
@@ -49,9 +101,23 @@ export class XitoyProductsService {
   }
 
   async update(id: string, dto: UpdateXitoyProductDto) {
+    const existing = await this.xitoyProductModel.findById(id).exec();
+    if (!existing) throw new NotFoundException('Xitoy mahsulot topilmadi');
+
     const $set: Record<string, unknown> = { ...dto };
     if (dto.name) $set.name = dto.name.trim();
     if (dto.imageUrl) $set.imageUrl = dto.imageUrl.trim();
+
+    const hasPricingField =
+      dto.chinaPriceYuan != null ||
+      dto.cubicM3 != null ||
+      dto.weightKg != null ||
+      dto.yuanRate != null ||
+      dto.customsFee != null;
+
+    if (hasPricingField) {
+      Object.assign($set, withComputedPricing(dto, existing));
+    }
 
     const item = await this.xitoyProductModel
       .findByIdAndUpdate(id, { $set }, { new: true })

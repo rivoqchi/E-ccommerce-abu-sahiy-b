@@ -23,10 +23,6 @@ export class CreateXitoyProductDto {
 
   @IsNumber()
   @Min(0)
-  wholesalePrice!: number;
-
-  @IsNumber()
-  @Min(0)
   yuanRate!: number;
 
   @IsNumber()

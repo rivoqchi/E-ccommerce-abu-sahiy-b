@@ -20,8 +20,13 @@ export class XitoyProduct {
   @Prop({ required: true, min: 0 })
   weightKg!: number;
 
+  /** Tan narxi ($) — avtomatik hisoblanadi */
   @Prop({ required: true, min: 0 })
   wholesalePrice!: number;
+
+  /** Tan narxi (¥) — avtomatik hisoblanadi */
+  @Prop({ required: true, min: 0 })
+  costPriceYuan!: number;
 
   @Prop({ required: true, min: 0 })
   yuanRate!: number;

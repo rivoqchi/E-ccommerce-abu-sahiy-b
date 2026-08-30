@@ -7,7 +7,6 @@ export type XitoyDraftStep =
   | 'chinaPriceYuan'
   | 'cubicM3'
   | 'weightKg'
-  | 'wholesalePrice'
   | 'yuanRate'
   | 'customsFee';
 
@@ -18,7 +17,6 @@ export type XitoyDraftData = {
   chinaPriceYuan?: number;
   cubicM3?: number;
   weightKg?: number;
-  wholesalePrice?: number;
   yuanRate?: number;
   customsFee?: number;
 };
@@ -29,9 +27,8 @@ export const xitoyStepPrompts: Record<XitoyDraftStep, string> = {
   chinaPriceYuan: '🇨🇳 Xitoy narxi (yuan) — raqam kiriting.',
   cubicM3: '📦 Kubi (m³) — raqam kiriting.',
   weightKg: '⚖️ Og‘irlik (kg) — raqam kiriting.',
-  wholesalePrice: '💰 Tan narxi — raqam kiriting.',
   yuanRate: '💱 Yuan kursi — raqam kiriting.',
-  customsFee: '🛃 Rastamoshka to‘lovi — raqam kiriting.',
+  customsFee: '🛃 Rastamoshka stavkasi — raqam kiriting.',
 };
 
 export function nextXitoyStep(current: XitoyDraftStep): XitoyDraftStep | null {
@@ -41,7 +38,6 @@ export function nextXitoyStep(current: XitoyDraftStep): XitoyDraftStep | null {
     'chinaPriceYuan',
     'cubicM3',
     'weightKg',
-    'wholesalePrice',
     'yuanRate',
     'customsFee',
   ];

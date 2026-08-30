@@ -1569,7 +1569,6 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       draft.chinaPriceYuan == null ||
       draft.cubicM3 == null ||
       draft.weightKg == null ||
-      draft.wholesalePrice == null ||
       draft.yuanRate == null ||
       draft.customsFee == null
     ) {
@@ -1584,7 +1583,6 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         chinaPriceYuan: draft.chinaPriceYuan,
         cubicM3: draft.cubicM3,
         weightKg: draft.weightKg,
-        wholesalePrice: draft.wholesalePrice,
         yuanRate: draft.yuanRate,
         customsFee: draft.customsFee,
       });

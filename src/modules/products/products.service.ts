@@ -15,6 +15,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
 import { slugify } from '../../common/utils/slugify';
+import { startOfTodayInTashkent } from '../../common/utils/storefront-day';
 import { RedisService } from '../redis/redis.service';
 import { ProductStatus } from '../../common/enums/product-status.enum';
 import { CategoriesService } from '../categories/categories.service';
@@ -120,6 +121,10 @@ export class ProductsService {
       filter.$text = { $search: query.q };
     }
 
+    if (query.newOnly) {
+      filter.createdAt = { $gte: startOfTodayInTashkent() };
+    }
+
     const total = await this.productModel.countDocuments(filter).exec();
 
     if (query.cursor) {
@@ -132,7 +137,7 @@ export class ProductsService {
       .find(filter)
       .populate('categoryId', 'name slug')
       .populate('brandId', 'name slug')
-      .sort({ _id: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .skip(skip)
       .limit(limit)
       .lean()

@@ -1,5 +1,5 @@
-import { IsMongoId, IsOptional, IsString, Max, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsBoolean, IsMongoId, IsOptional, IsString, Max, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
 
 export class QueryProductsDto {
   @IsOptional()
@@ -28,4 +28,10 @@ export class QueryProductsDto {
   @Min(1)
   @Max(100)
   limit?: number = 20;
+
+  /** Faqat bugun (Toshkent vaqti) qo‘shilgan mahsulotlar — bosh sahifa «Yangi mahsulotlar». */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  newOnly?: boolean;
 }

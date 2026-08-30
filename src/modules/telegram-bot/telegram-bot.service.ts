@@ -42,8 +42,11 @@ import {
   parsePositiveNumber,
   type XitoyDraftData,
   type XitoyDraftStep,
+  type YuanRateUnit,
   xitoyDraftKey,
   xitoyStepPrompts,
+  xitoyChinaPricePrompt,
+  xitoyYuanRateUnitPrompt,
   XITOY_DRAFT_TTL_SEC,
 } from './telegram-bot.xitoy-draft';
 
@@ -512,6 +515,9 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     );
     bot.callbackQuery(/^excel_seen:(.+)$/, (ctx) =>
       this.onExcelSeenCallback(ctx),
+    );
+    bot.callbackQuery(/^xitoy_rate_unit:(yuan|usd)$/, (ctx) =>
+      this.onXitoyRateUnitCallback(ctx),
     );
     bot.on('message:text', (ctx) => this.onFallbackText(ctx));
   }
@@ -1528,6 +1534,11 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     const step = draft.step;
     let updated: XitoyDraftData = { ...draft };
 
+    if (step === 'yuanRateUnit') {
+      await this.promptXitoyRateUnit(ctx);
+      return;
+    }
+
     if (step === 'name') {
       if (!text.trim()) {
         await ctx.reply(texts.xitoyInvalidName);
@@ -1548,12 +1559,76 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const nextStep = nextXitoyStep(step);
+    const nextStep = nextXitoyStep(step, updated.yuanRateUnit);
     if (!nextStep) return;
 
     updated.step = nextStep;
     await this.saveXitoyDraft(telegramId, updated);
+
+    if (nextStep === 'yuanRateUnit') {
+      await this.promptXitoyRateUnit(ctx);
+      return;
+    }
+
+    if (nextStep === 'chinaPriceYuan' && updated.yuanRateUnit) {
+      await ctx.reply(xitoyChinaPricePrompt(updated.yuanRateUnit), {
+        reply_markup: this.mainReplyKeyboard(true),
+      });
+      return;
+    }
+
+    if (nextStep === 'yuanRate') {
+      await ctx.reply(xitoyStepPrompts.yuanRate, {
+        reply_markup: this.mainReplyKeyboard(true),
+      });
+      return;
+    }
+
     await ctx.reply(xitoyStepPrompts[nextStep], {
+      reply_markup: this.mainReplyKeyboard(true),
+    });
+  }
+
+  private xitoyRateUnitKeyboard() {
+    return new InlineKeyboard()
+      .text('🇨🇳 Yuanda (¥ → $)', 'xitoy_rate_unit:yuan')
+      .row()
+      .text('🇺🇸 Dollarda ($ da)', 'xitoy_rate_unit:usd');
+  }
+
+  private async promptXitoyRateUnit(ctx: Context) {
+    await ctx.reply(xitoyYuanRateUnitPrompt, {
+      reply_markup: this.xitoyRateUnitKeyboard(),
+    });
+  }
+
+  private async onXitoyRateUnitCallback(ctx: Context) {
+    await ctx.answerCallbackQuery().catch(() => undefined);
+
+    const telegramId = ctx.from?.id;
+    if (telegramId == null) return;
+
+    const user = await this.requireAdmin(ctx);
+    if (!user) return;
+
+    const draft = await this.getXitoyDraft(String(telegramId));
+    if (!draft || draft.step !== 'yuanRateUnit') return;
+
+    const match = ctx.callbackQuery?.data?.match(/^xitoy_rate_unit:(yuan|usd)$/);
+    const unit = match?.[1] as YuanRateUnit | undefined;
+    if (!unit) return;
+
+    const updated: XitoyDraftData = {
+      ...draft,
+      yuanRateUnit: unit,
+      step: 'chinaPriceYuan',
+    };
+    await this.saveXitoyDraft(String(telegramId), updated);
+
+    await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }).catch(
+      () => undefined,
+    );
+    await ctx.reply(xitoyChinaPricePrompt(unit), {
       reply_markup: this.mainReplyKeyboard(true),
     });
   }
@@ -1569,8 +1644,9 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       draft.chinaPriceYuan == null ||
       draft.cubicM3 == null ||
       draft.weightKg == null ||
-      draft.yuanRate == null ||
-      draft.customsFee == null
+      !draft.yuanRateUnit ||
+      draft.customsFee == null ||
+      (draft.yuanRateUnit === 'yuan' && draft.yuanRate == null)
     ) {
       await ctx.reply(texts.xitoyNeedPhoto);
       return;
@@ -1583,7 +1659,8 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         chinaPriceYuan: draft.chinaPriceYuan,
         cubicM3: draft.cubicM3,
         weightKg: draft.weightKg,
-        yuanRate: draft.yuanRate,
+        yuanRate: draft.yuanRate ?? 0,
+        yuanRateUnit: draft.yuanRateUnit,
         customsFee: draft.customsFee,
       });
       await this.clearXitoyDraft(telegramId);

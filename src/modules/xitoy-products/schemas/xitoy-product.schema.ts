@@ -31,6 +31,10 @@ export class XitoyProduct {
   @Prop({ required: true, min: 0 })
   yuanRate!: number;
 
+  /** 'yuan' = 1$ = X¥, 'usd' = 1¥ = X$ */
+  @Prop({ required: true, enum: ['yuan', 'usd'], default: 'yuan' })
+  yuanRateUnit!: 'yuan' | 'usd';
+
   @Prop({ required: true, min: 0 })
   customsFee!: number;
 }

@@ -1,4 +1,9 @@
-import { IsNumber, IsString, Min, MinLength } from 'class-validator';
+import { IsEnum, IsNumber, IsOptional, IsString, Min, MinLength } from 'class-validator';
+
+export enum YuanRateUnitDto {
+  Yuan = 'yuan',
+  Usd = 'usd',
+}
 
 export class CreateXitoyProductDto {
   @IsString()
@@ -23,7 +28,12 @@ export class CreateXitoyProductDto {
 
   @IsNumber()
   @Min(0)
-  yuanRate!: number;
+  @IsOptional()
+  yuanRate?: number;
+
+  @IsEnum(YuanRateUnitDto)
+  @IsOptional()
+  yuanRateUnit?: YuanRateUnitDto;
 
   @IsNumber()
   @Min(0)

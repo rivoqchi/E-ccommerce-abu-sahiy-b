@@ -15,6 +15,7 @@ function withComputedPricing(
   const cubicM3 = dto.cubicM3 ?? existing!.cubicM3;
   const weightKg = dto.weightKg ?? existing!.weightKg;
   const yuanRate = dto.yuanRate ?? existing!.yuanRate;
+  const yuanRateUnit = dto.yuanRateUnit ?? existing!.yuanRateUnit ?? 'yuan';
   const customsFee = dto.customsFee ?? existing!.customsFee;
 
   const pricing = calculateXitoyCostPrice({
@@ -22,12 +23,13 @@ function withComputedPricing(
     cubicM3,
     weightKg,
     yuanRate,
+    yuanRateUnit,
     customsFee,
   });
 
   return {
     wholesalePrice: pricing.costPriceUsd,
-    costPriceYuan: pricing.costPriceYuan,
+    costPriceYuan: pricing.costPriceYuan ?? 0,
   };
 }
 
@@ -55,6 +57,7 @@ export class XitoyProductsService {
       cubicM3: item.cubicM3,
       weightKg: item.weightKg,
       yuanRate: item.yuanRate,
+      yuanRateUnit: item.yuanRateUnit ?? 'yuan',
       customsFee: item.customsFee,
     });
 
@@ -72,11 +75,14 @@ export class XitoyProductsService {
   }
 
   async create(dto: CreateXitoyProductDto) {
+    const yuanRateUnit = dto.yuanRateUnit ?? 'yuan';
+    const yuanRate = dto.yuanRate ?? 0;
     const pricing = calculateXitoyCostPrice({
       chinaPriceYuan: dto.chinaPriceYuan,
       cubicM3: dto.cubicM3,
       weightKg: dto.weightKg,
-      yuanRate: dto.yuanRate,
+      yuanRate,
+      yuanRateUnit,
       customsFee: dto.customsFee,
     });
 
@@ -87,8 +93,9 @@ export class XitoyProductsService {
       cubicM3: dto.cubicM3,
       weightKg: dto.weightKg,
       wholesalePrice: pricing.costPriceUsd,
-      costPriceYuan: pricing.costPriceYuan,
-      yuanRate: dto.yuanRate,
+      costPriceYuan: pricing.costPriceYuan ?? 0,
+      yuanRate,
+      yuanRateUnit,
       customsFee: dto.customsFee,
     });
 
@@ -113,6 +120,7 @@ export class XitoyProductsService {
       dto.cubicM3 != null ||
       dto.weightKg != null ||
       dto.yuanRate != null ||
+      dto.yuanRateUnit != null ||
       dto.customsFee != null;
 
     if (hasPricingField) {

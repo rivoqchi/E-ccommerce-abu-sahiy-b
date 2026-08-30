@@ -1,6 +1,7 @@
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsMongoId,
   IsNumber,
@@ -10,7 +11,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ProductStatus } from '../../../common/enums/product-status.enum';
 
 export class HamkorProductSpecDto {
@@ -78,4 +79,9 @@ export class CreateHamkorProductDto {
   @IsOptional()
   @IsEnum(ProductStatus)
   status?: ProductStatus;
+
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  highlightAsNew?: boolean;
 }

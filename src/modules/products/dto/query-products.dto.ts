@@ -29,7 +29,7 @@ export class QueryProductsDto {
   @Max(100)
   limit?: number = 20;
 
-  /** Faqat bugun (Toshkent vaqti) qo‘shilgan mahsulotlar — bosh sahifa «Yangi mahsulotlar». */
+  /** Faqat «Yangi mahsulotlar» (newHighlightUntil hali tugamagan). */
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true' || value === '1')
   @IsBoolean()

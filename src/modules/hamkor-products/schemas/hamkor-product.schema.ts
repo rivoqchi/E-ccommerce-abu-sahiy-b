@@ -71,12 +71,16 @@ export class HamkorProduct {
 
   @Prop({ default: true })
   isActive!: boolean;
+
+  @Prop({ type: Date, index: true, sparse: true })
+  newHighlightUntil?: Date;
 }
 
 export const HamkorProductSchema = SchemaFactory.createForClass(HamkorProduct);
 HamkorProductSchema.index({ partnerId: 1, status: 1 });
 HamkorProductSchema.index({ categoryId: 1, status: 1 });
 HamkorProductSchema.index({ status: 1, isActive: 1, createdAt: -1 });
+HamkorProductSchema.index({ status: 1, isActive: 1, newHighlightUntil: -1 });
 HamkorProductSchema.index({
   name: 'text',
   description: 'text',

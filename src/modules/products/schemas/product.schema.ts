@@ -77,12 +77,17 @@ export class Product {
 
   @Prop({ default: true })
   isActive!: boolean;
+
+  /** Switch yoqilganda: bosh sahifa «Yangi mahsulotlar»da shu sanagacha. */
+  @Prop({ type: Date, index: true, sparse: true })
+  newHighlightUntil?: Date;
 }
 
 export const ProductSchema = SchemaFactory.createForClass(Product);
 ProductSchema.index({ categoryId: 1, status: 1 });
 ProductSchema.index({ brandId: 1, status: 1 });
 ProductSchema.index({ status: 1, isActive: 1, createdAt: -1 });
+ProductSchema.index({ status: 1, isActive: 1, newHighlightUntil: -1 });
 ProductSchema.index({
   name: 'text',
   description: 'text',

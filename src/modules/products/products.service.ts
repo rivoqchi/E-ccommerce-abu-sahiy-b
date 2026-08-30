@@ -15,7 +15,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
 import { slugify } from '../../common/utils/slugify';
-import { startOfTodayInTashkent } from '../../common/utils/storefront-day';
+import { newHighlightUntilFromNow } from '../../common/utils/product-new-highlight';
 import { RedisService } from '../redis/redis.service';
 import { ProductStatus } from '../../common/enums/product-status.enum';
 import { CategoriesService } from '../categories/categories.service';
@@ -67,9 +67,10 @@ export class ProductsService {
     );
 
     const barcode = dto.barcode?.replace(/\s+/g, '').trim() || undefined;
+    const { highlightAsNew, ...productFields } = dto;
 
     const product = await this.productModel.create({
-      ...dto,
+      ...productFields,
       code,
       barcode,
       description: dto.description?.trim() || dto.name,
@@ -83,6 +84,9 @@ export class ProductsService {
       images: dto.images ?? [],
       status: dto.status ?? ProductStatus.Active,
       isActive: true,
+      ...(highlightAsNew
+        ? { newHighlightUntil: newHighlightUntilFromNow() }
+        : {}),
     });
 
     await this.invalidateCache(product._id.toString(), slug);
@@ -122,7 +126,7 @@ export class ProductsService {
     }
 
     if (query.newOnly) {
-      filter.createdAt = { $gte: startOfTodayInTashkent() };
+      filter.newHighlightUntil = { $gt: new Date() };
     }
 
     const total = await this.productModel.countDocuments(filter).exec();
@@ -137,7 +141,11 @@ export class ProductsService {
       .find(filter)
       .populate('categoryId', 'name slug')
       .populate('brandId', 'name slug')
-      .sort({ createdAt: -1, _id: -1 })
+      .sort(
+        query.newOnly
+          ? { newHighlightUntil: -1, createdAt: -1, _id: -1 }
+          : { createdAt: -1, _id: -1 },
+      )
       .skip(skip)
       .limit(limit)
       .lean()
@@ -378,6 +386,13 @@ export class ProductsService {
     }
 
     const updatePayload: Record<string, unknown> = { ...dto };
+    delete updatePayload.highlightAsNew;
+
+    if (dto.highlightAsNew === true) {
+      updatePayload.newHighlightUntil = newHighlightUntilFromNow();
+    } else if (dto.highlightAsNew === false) {
+      updatePayload.newHighlightUntil = null;
+    }
 
     if (dto.slug) {
       updatePayload.slug = await this.buildUniqueSlug(slugify(dto.slug), id);

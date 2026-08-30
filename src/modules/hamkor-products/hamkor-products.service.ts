@@ -11,6 +11,7 @@ import { CreateHamkorProductDto } from './dto/create-hamkor-product.dto';
 import { UpdateHamkorProductDto } from './dto/update-hamkor-product.dto';
 import { QueryHamkorProductsDto } from './dto/query-hamkor-products.dto';
 import { slugify } from '../../common/utils/slugify';
+import { newHighlightUntilFromNow } from '../../common/utils/product-new-highlight';
 import { RedisService } from '../redis/redis.service';
 import { ProductStatus } from '../../common/enums/product-status.enum';
 import { HamkorCategoriesService } from '../hamkor-categories/hamkor-categories.service';
@@ -54,9 +55,10 @@ export class HamkorProductsService {
     const slug = await this.buildUniqueSlug(
       dto.slug ? slugify(dto.slug) : slugify(code) || slugify(dto.name),
     );
+    const { highlightAsNew, ...productFields } = dto;
 
     const product = await this.productModel.create({
-      ...dto,
+      ...productFields,
       code,
       description: dto.description?.trim() || dto.name,
       slug,
@@ -69,6 +71,9 @@ export class HamkorProductsService {
       images: dto.images ?? [],
       status: dto.status ?? ProductStatus.Active,
       isActive: true,
+      ...(highlightAsNew
+        ? { newHighlightUntil: newHighlightUntilFromNow() }
+        : {}),
     });
 
     await this.invalidateCache(product._id.toString(), slug);
@@ -274,6 +279,13 @@ export class HamkorProductsService {
     }
 
     const updatePayload: Record<string, unknown> = { ...dto };
+    delete updatePayload.highlightAsNew;
+
+    if (dto.highlightAsNew === true) {
+      updatePayload.newHighlightUntil = newHighlightUntilFromNow();
+    } else if (dto.highlightAsNew === false) {
+      updatePayload.newHighlightUntil = null;
+    }
 
     if (dto.slug) {
       updatePayload.slug = await this.buildUniqueSlug(slugify(dto.slug), id);

@@ -19,6 +19,7 @@ import { RedisService } from '../redis/redis.service';
 import { ProductsService } from '../products/products.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { XitoyProductsService } from '../xitoy-products/xitoy-products.service';
+import { YuanRateUnitDto } from '../xitoy-products/dto/create-xitoy-product.dto';
 import { UserDocument } from '../users/schemas/user.schema';
 import { Role } from '../../common/enums/role.enum';
 import { onOrderCreated } from '../orders/order-events';
@@ -38,6 +39,7 @@ import {
   texts,
 } from './telegram-bot.texts';
 import {
+  getXitoyStepPrompt,
   nextXitoyStep,
   parsePositiveNumber,
   type XitoyDraftData,
@@ -1512,7 +1514,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         step: nextStep,
       };
       await this.saveXitoyDraft(String(telegramId), updated);
-      await ctx.reply(xitoyStepPrompts[nextStep], {
+      await ctx.reply(getXitoyStepPrompt(nextStep), {
         reply_markup: this.mainReplyKeyboard(true),
       });
     } catch (err) {
@@ -1584,7 +1586,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await ctx.reply(xitoyStepPrompts[nextStep], {
+    await ctx.reply(getXitoyStepPrompt(nextStep, updated.yuanRateUnit), {
       reply_markup: this.mainReplyKeyboard(true),
     });
   }
@@ -1660,7 +1662,10 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         cubicM3: draft.cubicM3,
         weightKg: draft.weightKg,
         yuanRate: draft.yuanRate ?? 0,
-        yuanRateUnit: draft.yuanRateUnit,
+        yuanRateUnit:
+          draft.yuanRateUnit === 'usd'
+            ? YuanRateUnitDto.Usd
+            : YuanRateUnitDto.Yuan,
         customsFee: draft.customsFee,
       });
       await this.clearXitoyDraft(telegramId);

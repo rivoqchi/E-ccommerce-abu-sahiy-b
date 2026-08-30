@@ -83,6 +83,19 @@ export function parsePositiveNumber(text: string): number | null {
   return value;
 }
 
+export function getXitoyStepPrompt(
+  step: XitoyDraftStep,
+  unit?: YuanRateUnit,
+): string {
+  if (step === 'yuanRateUnit') {
+    return xitoyYuanRateUnitPrompt;
+  }
+  if (step === 'chinaPriceYuan') {
+    return unit ? xitoyChinaPricePrompt(unit) : '🇨🇳 Xitoy narxi — raqam kiriting.';
+  }
+  return xitoyStepPrompts[step];
+}
+
 export function xitoyDraftKey(telegramId: string | number): string {
   return `${XITOY_DRAFT_KEY_PREFIX}${telegramId}`;
 }

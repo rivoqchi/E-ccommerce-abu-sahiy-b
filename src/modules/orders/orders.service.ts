@@ -28,6 +28,7 @@ import {
   fetchExcelImage,
   type ExcelOrder,
 } from './order-excel';
+import { emitOrderCreated } from './order-events';
 
 const STATUS_FLOW: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.Pending]: [OrderStatus.Paid, OrderStatus.Cancelled],
@@ -578,6 +579,57 @@ export class OrdersService {
       customerName: order.shippingAddress?.fullName ?? '',
       itemCount: order.items?.length ?? 0,
     });
+    emitOrderCreated(order._id.toString());
+  }
+
+  async saveExcelNotifyMessages(
+    orderId: string,
+    messages: Array<{ chatId: string; messageId: number }>,
+  ) {
+    await this.orderModel
+      .updateOne(
+        { _id: new Types.ObjectId(orderId) },
+        { $set: { excelNotifyMessages: messages } },
+      )
+      .exec();
+  }
+
+  async markExcelSeen(
+    orderId: string,
+    viewer: { telegramId: string; username?: string; fullName?: string },
+  ) {
+    const order = await this.orderModel.findById(orderId).exec();
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const already = (order.excelSeenBy ?? []).some(
+      (row) => row.telegramId === viewer.telegramId,
+    );
+    if (!already) {
+      order.excelSeenBy = [
+        ...(order.excelSeenBy ?? []),
+        {
+          telegramId: viewer.telegramId,
+          username: viewer.username,
+          fullName: viewer.fullName,
+          seenAt: new Date(),
+        },
+      ];
+      await order.save();
+    }
+
+    return {
+      already,
+      shortId: String(order._id).slice(-8).toUpperCase(),
+      messages: order.excelNotifyMessages ?? [],
+      seenBy: (order.excelSeenBy ?? []).map((row) => ({
+        telegramId: row.telegramId,
+        username: row.username,
+        fullName: row.fullName,
+        seenAt: row.seenAt,
+      })),
+    };
   }
 
   private collectImageUrls(

@@ -113,6 +113,35 @@ export class ShippingAddress {
 export const ShippingAddressSchema =
   SchemaFactory.createForClass(ShippingAddress);
 
+@Schema({ _id: false })
+export class ExcelNotifyMessage {
+  @Prop({ required: true })
+  chatId!: string;
+
+  @Prop({ required: true })
+  messageId!: number;
+}
+
+export const ExcelNotifyMessageSchema =
+  SchemaFactory.createForClass(ExcelNotifyMessage);
+
+@Schema({ _id: false })
+export class ExcelSeenBy {
+  @Prop({ required: true })
+  telegramId!: string;
+
+  @Prop({ trim: true })
+  username?: string;
+
+  @Prop({ trim: true })
+  fullName?: string;
+
+  @Prop({ required: true })
+  seenAt!: Date;
+}
+
+export const ExcelSeenBySchema = SchemaFactory.createForClass(ExcelSeenBy);
+
 @Schema({ timestamps: true, collection: 'orders' })
 export class Order {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, index: true })
@@ -158,6 +187,12 @@ export class Order {
 
   @Prop()
   fulfilledAt?: Date;
+
+  @Prop({ type: [ExcelNotifyMessageSchema], default: [] })
+  excelNotifyMessages!: ExcelNotifyMessage[];
+
+  @Prop({ type: [ExcelSeenBySchema], default: [] })
+  excelSeenBy!: ExcelSeenBy[];
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);

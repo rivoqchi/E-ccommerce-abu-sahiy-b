@@ -22,6 +22,8 @@ export const texts = {
     'Profilingiz tasdiqlandi. Quyidagi menyudan kerakli bo‘limni tanlang.\n\n• Open Web — sayt ochiladi va avtomatik kirasiz (kod shart emas)\n• Kod yuborish — web /login uchun 6 xonali kod',
   notAdmin: 'Faqat admin tasdiqlashi yoki bloklashi mumkin.',
   alreadyDecided: 'Bu profil allaqachon ko‘rib chiqilgan.',
+  excelSeenOk: 'Ko‘rdi deb belgilandi',
+  excelSeenAlready: 'Allaqachon belgilangansiz',
   approvedBy: (name: string) => `${name} tasdiqlagan`,
   blockedBy: (name: string) => `${name} bloklagan`,
   contactRejected:

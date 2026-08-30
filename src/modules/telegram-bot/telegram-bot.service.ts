@@ -19,6 +19,7 @@ import { RedisService } from '../redis/redis.service';
 import { ProductsService } from '../products/products.service';
 import { UserDocument } from '../users/schemas/user.schema';
 import { Role } from '../../common/enums/role.enum';
+import { onOrderCreated } from '../orders/order-events';
 import {
   ApprovalStatus,
   resolveApprovalStatus,
@@ -52,6 +53,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   private bootstrapping = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingUpdates: Update[] = [];
+  private stopOrderCreatedListener: (() => void) | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -63,6 +65,10 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
+    this.stopOrderCreatedListener = onOrderCreated((orderId) => {
+      void this.notifyAdminsOfNewOrder(orderId);
+    });
+
     const token = this.configService.get<string>('telegram.botToken')?.trim();
     if (!token) {
       this.logger.warn(
@@ -353,6 +359,8 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    this.stopOrderCreatedListener?.();
+    this.stopOrderCreatedListener = null;
     await this.stopPollingQuietly();
   }
 
@@ -484,6 +492,9 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     );
     bot.callbackQuery(/^block:(.+)$/, (ctx) =>
       this.onApprovalCallback(ctx, 'block'),
+    );
+    bot.callbackQuery(/^excel_seen:(.+)$/, (ctx) =>
+      this.onExcelSeenCallback(ctx),
     );
     bot.on('message:text', (ctx) => this.onFallbackText(ctx));
   }
@@ -1081,6 +1092,213 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         }`,
       );
     }
+  }
+
+  async notifyAdminsOfNewOrder(orderId: string): Promise<void> {
+    if (!this.bot || !isMongoId(orderId)) return;
+
+    let order: Awaited<ReturnType<OrdersService['findById']>>;
+    try {
+      order = await this.ordersService.findById(orderId, undefined, true);
+    } catch (err) {
+      this.logger.warn(
+        `new-order excel: order ${orderId} ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
+
+    let customer: UserDocument | null = null;
+    try {
+      customer = await this.usersService.findById(String(order.userId));
+    } catch {
+      customer = null;
+    }
+
+    const caption = this.formatNewOrderCaption(order, customer, []);
+    let excel: { buffer: Buffer; filename: string };
+    try {
+      excel = await this.ordersService.excelForOrder(orderId);
+    } catch (err) {
+      this.logger.warn(
+        `new-order excel build ${orderId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
+
+    const admins = await this.usersService.findAdminsWithTelegram();
+    const messages: { chatId: string; messageId: number }[] = [];
+    const keyboard = this.excelSeenKeyboard(orderId);
+
+    for (const admin of admins) {
+      if (!admin.telegramId) continue;
+      try {
+        const sent = await this.bot.api.sendDocument(
+          admin.telegramId,
+          new InputFile(excel.buffer, excel.filename),
+          { caption, reply_markup: keyboard },
+        );
+        messages.push({
+          chatId: String(sent.chat.id),
+          messageId: sent.message_id,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `new-order excel admin ${admin.telegramId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    if (messages.length) {
+      await this.ordersService.saveExcelNotifyMessages(orderId, messages);
+    }
+  }
+
+  private async onExcelSeenCallback(ctx: Context) {
+    const match = ctx.match;
+    const orderId = Array.isArray(match) ? match[1] : undefined;
+    if (!orderId || !isMongoId(orderId)) {
+      await ctx.answerCallbackQuery().catch(() => undefined);
+      return;
+    }
+
+    const from = ctx.from;
+    if (!from) {
+      await ctx.answerCallbackQuery().catch(() => undefined);
+      return;
+    }
+
+    const actorDoc = await this.usersService.findByTelegramId(String(from.id));
+    if (!actorDoc || actorDoc.role !== Role.Admin) {
+      await ctx
+        .answerCallbackQuery({ text: texts.notAdmin, show_alert: true })
+        .catch(() => undefined);
+      return;
+    }
+
+    const fullName = [from.first_name, from.last_name]
+      .filter(Boolean)
+      .join(' ')
+      .trim() || actorDoc.fullName;
+
+    let result: Awaited<ReturnType<OrdersService['markExcelSeen']>>;
+    try {
+      result = await this.ordersService.markExcelSeen(orderId, {
+        telegramId: String(from.id),
+        username: from.username || actorDoc.username,
+        fullName,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `excel_seen ${orderId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      await ctx.answerCallbackQuery().catch(() => undefined);
+      return;
+    }
+
+    await ctx
+      .answerCallbackQuery({
+        text: result.already ? texts.excelSeenAlready : texts.excelSeenOk,
+      })
+      .catch(() => undefined);
+
+    await this.syncExcelSeenMessages(orderId, result);
+  }
+
+  private async syncExcelSeenMessages(
+    orderId: string,
+    result: Awaited<ReturnType<OrdersService['markExcelSeen']>>,
+  ) {
+    if (!this.bot || !result.messages.length) return;
+
+    let order: Awaited<ReturnType<OrdersService['findById']>>;
+    try {
+      order = await this.ordersService.findById(orderId, undefined, true);
+    } catch {
+      return;
+    }
+
+    let customer: UserDocument | null = null;
+    try {
+      customer = await this.usersService.findById(String(order.userId));
+    } catch {
+      customer = null;
+    }
+
+    const caption = this.formatNewOrderCaption(order, customer, result.seenBy);
+
+    for (const msg of result.messages) {
+      const alreadySeen = result.seenBy.some(
+        (row) => row.telegramId === msg.chatId,
+      );
+      try {
+        await this.bot.api.editMessageCaption(msg.chatId, msg.messageId, {
+          caption,
+          reply_markup: alreadySeen
+            ? { inline_keyboard: [] }
+            : this.excelSeenKeyboard(orderId),
+        });
+      } catch (err) {
+        this.logger.warn(
+          `edit excel caption ${msg.chatId}/${msg.messageId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+  }
+
+  private formatNewOrderCaption(
+    order: {
+      _id: unknown;
+      shippingAddress?: { fullName?: string; phone?: string };
+    },
+    customer: UserDocument | null,
+    seenBy: Array<{ username?: string; fullName?: string }>,
+  ) {
+    const shortId = String(order._id).slice(-8).toUpperCase();
+    const name = order.shippingAddress?.fullName || customer?.fullName || '—';
+    const phone = order.shippingAddress?.phone || customer?.phone || '—';
+    const telegram = this.formatTelegramProfile(customer);
+
+    const lines = [
+      '🛒 Yangi buyurtma',
+      '',
+      `Raqam: #${shortId}`,
+      `Mijoz: ${name}`,
+      `Telefon: ${phone}`,
+      `Telegram: ${telegram}`,
+    ];
+
+    if (seenBy.length) {
+      lines.push('', '✅ Ko‘rdi:');
+      for (const row of seenBy) {
+        const who = row.username
+          ? `@${row.username}${row.fullName ? ` (${row.fullName})` : ''}`
+          : row.fullName || '—';
+        lines.push(`• ${who}`);
+      }
+    }
+
+    return lines.join('\n').slice(0, 1024);
+  }
+
+  private formatTelegramProfile(user: UserDocument | null) {
+    if (!user) return '—';
+    if (user.username) return `@${user.username}`;
+    if (user.telegramId) return `Telegram ID: ${user.telegramId}`;
+    return '—';
+  }
+
+  private excelSeenKeyboard(orderId: string) {
+    return new InlineKeyboard().text("Excelni ko'rdim", `excel_seen:${orderId}`);
   }
 
   private formatAdminProfileCard(user: UserDocument, footer?: string) {

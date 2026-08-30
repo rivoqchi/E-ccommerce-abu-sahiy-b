@@ -83,8 +83,8 @@ function lineStatus(item: ExcelOrderItem) {
   ) {
     return 'Almashtirilgan';
   }
-  if (given < item.quantity) return `Berildi ${given}/${item.quantity}`;
-  return 'Berildi';
+  if (given < item.quantity) return `${given}/${item.quantity}`;
+  return '';
 }
 
 function sourceOf(item: { source?: string; partnerName?: string }) {
@@ -167,11 +167,8 @@ export async function buildOrderWorkbook(
 
   ws.columns = [
     { width: 14 },
-    { width: 38 },
+    { width: 40 },
     { width: 12 },
-    { width: 12 },
-    { width: 16 },
-    { width: 14 },
     { width: 16 },
   ];
 
@@ -179,16 +176,16 @@ export async function buildOrderWorkbook(
   const shortId = String(order._id).slice(-8).toUpperCase();
   const fmt = moneyFmt(order.currency);
 
-  ws.mergeCells('A1:G1');
+  ws.mergeCells('A1:D1');
   ws.getCell('A1').value = 'SAMI';
   ws.getCell('A1').font = { name: 'Calibri', size: 22, bold: true, color: { argb: FILL.ink } };
   ws.getRow(1).height = 28;
 
-  ws.mergeCells('A2:G2');
+  ws.mergeCells('A2:D2');
   ws.getCell('A2').value = `Buyurtma #${shortId}`;
   ws.getCell('A2').font = { name: 'Calibri', size: 14, bold: true };
 
-  ws.mergeCells('A3:G3');
+  ws.mergeCells('A3:D3');
   ws.getCell('A3').value =
     `${formatWhen(order.createdAt)}  ·  ${STATUS_LABEL[order.status] ?? order.status}  ·  ${currency}`;
   ws.getCell('A3').font = { name: 'Calibri', size: 10, color: { argb: 'FF6B7280' } };
@@ -208,11 +205,11 @@ export async function buildOrderWorkbook(
     const r = 5 + i;
     ws.getCell(`A${r}`).value = pair[0];
     ws.getCell(`A${r}`).font = { bold: true, size: 10, color: { argb: 'FF6B7280' } };
-    ws.mergeCells(`B${r}:G${r}`);
+    ws.mergeCells(`B${r}:D${r}`);
     ws.getCell(`B${r}`).value = pair[1];
     ws.getCell(`B${r}`).font = { size: 11 };
     ws.getRow(r).height = 18;
-    ['A', 'B', 'C', 'D', 'E', 'F', 'G'].forEach((col) => {
+    ['A', 'B', 'C', 'D'].forEach((col) => {
       ws.getCell(`${col}${r}`).fill = {
         type: 'pattern',
         pattern: 'solid',
@@ -222,7 +219,7 @@ export async function buildOrderWorkbook(
   });
 
   const headerRow = 10;
-  const headers = ['Rasm', 'Mahsulot', 'Buyurtma', 'Berildi', 'Status', 'Narx', 'Hisob'];
+  const headers = ['Rasm', 'Mahsulot', 'Buyurtma', 'Hisob'];
   headers.forEach((h, i) => applyHeaderCell(ws.getCell(headerRow, i + 1), h));
   ws.getRow(headerRow).height = 22;
 
@@ -232,9 +229,7 @@ export async function buildOrderWorkbook(
   const writeProductRow = (
     name: string,
     ordered: number,
-    given: number,
     status: string,
-    unit: number,
     billed: number,
     imageUrl: string | undefined,
     isSub: boolean,
@@ -247,24 +242,19 @@ export async function buildOrderWorkbook(
     excelRow.getCell(2).value = isSub ? `↳ ${name}` : name;
     excelRow.getCell(2).alignment = { vertical: 'middle', wrapText: true };
     excelRow.getCell(3).value = ordered;
-    excelRow.getCell(4).value = given;
-    excelRow.getCell(5).value = status;
-    excelRow.getCell(6).value = unit;
-    excelRow.getCell(6).numFmt = fmt;
-    excelRow.getCell(7).value = billed;
-    excelRow.getCell(7).numFmt = fmt;
-    excelRow.getCell(7).font = { bold: true, name: 'Calibri' };
+    excelRow.getCell(4).value = status === 'Qolmagan' ? 0 : billed;
+    excelRow.getCell(4).numFmt = fmt;
+    excelRow.getCell(4).font = { bold: true, name: 'Calibri' };
 
     if (status === 'Qolmagan') {
-      excelRow.getCell(5).fill = {
+      excelRow.getCell(2).font = { color: { argb: 'FFB91C1C' }, bold: true, size: 11, name: 'Calibri' };
+      excelRow.getCell(2).fill = {
         type: 'pattern',
         pattern: 'solid',
         fgColor: { argb: FILL.danger },
       };
-      excelRow.getCell(5).font = { color: { argb: 'FFB91C1C' }, bold: true, size: 10 };
-      excelRow.getCell(7).value = 0;
-    } else if (status.startsWith('Berildi ') || status === 'Almashtirilgan') {
-      excelRow.getCell(5).fill = {
+    } else if (status === 'Almashtirilgan' || status.includes('/')) {
+      excelRow.getCell(2).fill = {
         type: 'pattern',
         pattern: 'solid',
         fgColor: { argb: FILL.warn },
@@ -272,19 +262,18 @@ export async function buildOrderWorkbook(
     }
 
     if (row % 2 === 0) {
-      for (let c = 1; c <= 7; c++) {
-        if (c !== 5 || status === 'Berildi') {
-          const cell = excelRow.getCell(c);
-          if (!cell.fill || (cell.fill as { fgColor?: { argb?: string } }).fgColor?.argb !== FILL.danger) {
-            if (status === 'Berildi' || c !== 5) {
-              cell.fill = {
-                type: 'pattern',
-                pattern: 'solid',
-                fgColor: { argb: FILL.zebra },
-              };
-            }
-          }
+      for (let c = 1; c <= 4; c++) {
+        if (
+          c === 2 &&
+          (status === 'Qolmagan' || status === 'Almashtirilgan' || status.includes('/'))
+        ) {
+          continue;
         }
+        excelRow.getCell(c).fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: FILL.zebra },
+        };
       }
     }
 
@@ -312,9 +301,7 @@ export async function buildOrderWorkbook(
     writeProductRow(
       item.name,
       item.quantity,
-      given,
       lineStatus(item),
-      item.unitPrice,
       billed,
       item.image,
       false,
@@ -322,10 +309,8 @@ export async function buildOrderWorkbook(
     for (const sub of item.substitutes ?? []) {
       writeProductRow(
         sub.name,
-        0,
         sub.quantity,
         'Almashtirilgan',
-        sub.unitPrice,
         sub.quantity * sub.unitPrice,
         sub.image,
         true,
@@ -334,7 +319,7 @@ export async function buildOrderWorkbook(
   }
 
   if (!items.length) {
-    ws.mergeCells(`A${row}:G${row}`);
+    ws.mergeCells(`A${row}:D${row}`);
     ws.getCell(`A${row}`).value = 'Mahsulotlar yoʻq';
     row += 1;
   }
@@ -350,7 +335,7 @@ export async function buildOrderWorkbook(
   totals.push(['Yakuniy hisob', order.total, true]);
 
   for (const [label, value, strong] of totals) {
-    ws.mergeCells(`A${row}:F${row}`);
+    ws.mergeCells(`A${row}:C${row}`);
     ws.getCell(`A${row}`).value = label;
     ws.getCell(`A${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
     ws.getCell(`A${row}`).font = {
@@ -358,15 +343,15 @@ export async function buildOrderWorkbook(
       size: strong ? 12 : 10,
       color: { argb: strong ? 'FFFFFFFF' : 'FF6B7280' },
     };
-    ws.getCell(`G${row}`).value = value;
-    ws.getCell(`G${row}`).numFmt = fmt;
-    ws.getCell(`G${row}`).font = {
+    ws.getCell(`D${row}`).value = value;
+    ws.getCell(`D${row}`).numFmt = fmt;
+    ws.getCell(`D${row}`).font = {
       bold: true,
       size: strong ? 12 : 11,
       color: { argb: strong ? 'FFFFFFFF' : FILL.ink },
     };
     if (strong) {
-      for (const col of ['A', 'B', 'C', 'D', 'E', 'F', 'G']) {
+      for (const col of ['A', 'B', 'C', 'D']) {
         ws.getCell(`${col}${row}`).fill = {
           type: 'pattern',
           pattern: 'solid',
@@ -395,15 +380,13 @@ export async function buildOrdersListWorkbook(
     { width: 12 },
     { width: 20 },
     { width: 22 },
-    { width: 16 },
-    { width: 28 },
     { width: 42 },
     { width: 16 },
     { width: 10 },
     { width: 16 },
   ];
 
-  ws.mergeCells('A1:I1');
+  ws.mergeCells('A1:G1');
   ws.getCell('A1').value = `SAMI — Buyurtmalar (${orders.length})`;
   ws.getCell('A1').font = { size: 16, bold: true, name: 'Calibri' };
   ws.getRow(1).height = 24;
@@ -412,8 +395,6 @@ export async function buildOrdersListWorkbook(
     'ID',
     'Sana',
     'Mijoz',
-    'Telefon',
-    'Manzil',
     'Mahsulotlar',
     'Status',
     'Valyuta',
@@ -427,26 +408,23 @@ export async function buildOrdersListWorkbook(
     const addr = order.shippingAddress;
     const products = (order.items ?? [])
       .map((i) => {
-        const given = givenOf(i);
         const st = lineStatus(i);
         const subs = (i.substitutes ?? [])
           .map((s) => `→ ${s.name} ×${s.quantity}`)
           .join(' ');
-        return `${i.name} ×${given}/${i.quantity} (${st})${subs ? ` ${subs}` : ''}`;
+        return `${i.name} ×${i.quantity}${st ? ` (${st})` : ''}${subs ? ` ${subs}` : ''}`;
       })
       .join('; ');
     r.values = [
       String(order._id).slice(-8).toUpperCase(),
       formatWhen(order.createdAt),
       addr?.fullName ?? '—',
-      addr?.phone ?? '',
-      [addr?.line1, addr?.city].filter(Boolean).join(', '),
       products || '—',
       STATUS_LABEL[order.status] ?? order.status,
       order.currency === 'USD' ? 'USD' : 'UZS',
       order.total,
     ];
-    r.getCell(9).numFmt = moneyFmt(order.currency);
+    r.getCell(7).numFmt = moneyFmt(order.currency);
     r.alignment = { vertical: 'middle', wrapText: true };
     r.height = 32;
     r.font = { name: 'Calibri', size: 10 };
@@ -463,7 +441,7 @@ export async function buildOrdersListWorkbook(
 
   ws.autoFilter = {
     from: { row: 2, column: 1 },
-    to: { row: Math.max(2, orders.length + 2), column: 9 },
+    to: { row: Math.max(2, orders.length + 2), column: 7 },
   };
 
   return wb;

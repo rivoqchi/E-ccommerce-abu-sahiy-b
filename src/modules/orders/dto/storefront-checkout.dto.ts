@@ -18,9 +18,21 @@ class CheckoutItemDto {
   @IsMongoId()
   productId!: string;
 
+  /** Legacy: jami dona (box/piece berilmasa). */
+  @IsOptional()
   @IsInt()
   @Min(1)
-  quantity!: number;
+  quantity?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  boxQuantity?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  pieceQuantity?: number;
 
   @IsOptional()
   @IsEnum(ProductSource)

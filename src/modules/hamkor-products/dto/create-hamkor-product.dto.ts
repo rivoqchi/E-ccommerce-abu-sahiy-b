@@ -59,6 +59,11 @@ export class CreateHamkorProductDto {
   @Min(0)
   stock!: number;
 
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  piecesPerBox?: number;
+
   @IsMongoId()
   partnerId!: string;
 

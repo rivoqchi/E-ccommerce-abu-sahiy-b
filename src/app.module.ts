@@ -29,6 +29,7 @@ import { HealthModule } from './health/health.module';
 import { TelegramBotModule } from './modules/telegram-bot/telegram-bot.module';
 import { SmartupModule } from './modules/smartup/smartup.module';
 import { ExchangeRateModule } from './modules/exchange-rate/exchange-rate.module';
+import { XitoyProductsModule } from './modules/xitoy-products/xitoy-products.module';
 
 @Module({
   imports: [
@@ -81,6 +82,7 @@ import { ExchangeRateModule } from './modules/exchange-rate/exchange-rate.module
     TelegramBotModule,
     SmartupModule,
     ExchangeRateModule,
+    XitoyProductsModule,
   ],
   providers: [
     {

@@ -1,9 +1,14 @@
 import ExcelJS from 'exceljs';
 import { OrderItemFulfillment } from '../../common/enums/order-item-fulfillment.enum';
+import { formatNakladnoyCase } from '../../common/utils/product-units';
 
 export type ExcelOrderItem = {
   name: string;
+  code?: string;
   quantity: number;
+  boxQuantity?: number;
+  pieceQuantity?: number;
+  piecesPerBox?: number;
   unitPrice: number;
   givenQuantity?: number;
   fulfillmentStatus?: string;
@@ -12,6 +17,7 @@ export type ExcelOrderItem = {
   image?: string;
   substitutes?: Array<{
     name: string;
+    code?: string;
     quantity: number;
     unitPrice: number;
     source?: string;
@@ -44,8 +50,8 @@ export type ExcelOrder = {
 
 const STATUS_LABEL: Record<string, string> = {
   pending: 'Kutilmoqda',
-  paid: "Toʻlangan",
-  shipped: "Joʻnatilgan",
+  paid: 'Toʻlangan',
+  shipped: 'Joʻnatilgan',
   delivered: 'Yetkazilgan',
   cancelled: 'Bekor qilingan',
 };
@@ -59,6 +65,8 @@ const FILL = {
   total: 'FF111827',
   card: 'FFF8FAFC',
 };
+
+const DEFAULT_SKLAD = 'KOROBKA';
 
 function moneyFmt(currency?: string) {
   return currency === 'USD' ? '"$"#,##0.00' : '#,##0';
@@ -87,9 +95,19 @@ function lineStatus(item: ExcelOrderItem) {
   return '';
 }
 
-function sourceOf(item: { source?: string; partnerName?: string }) {
-  if (item.source === 'hamkor') return item.partnerName || 'Hamkor';
-  return "Doʻkon";
+function skladOf(item: { source?: string; partnerName?: string }) {
+  if (item.source === 'hamkor') return item.partnerName || 'HAMKOR';
+  return DEFAULT_SKLAD;
+}
+
+function caseQtyOf(item: ExcelOrderItem) {
+  const hasUnits =
+    (item.boxQuantity != null && item.boxQuantity > 0) ||
+    (item.pieceQuantity != null && item.pieceQuantity > 0);
+  if (hasUnits) {
+    return formatNakladnoyCase(item.boxQuantity, item.pieceQuantity);
+  }
+  return '—';
 }
 
 function formatWhen(value?: Date | string) {
@@ -145,6 +163,65 @@ function applyHeaderCell(cell: ExcelJS.Cell, text: string) {
   };
 }
 
+type NakladnoyRow = {
+  index: number;
+  code: string;
+  sklad: string;
+  name: string;
+  caseQty: string;
+  totalPieces: number;
+  unitPrice: number;
+  summa: number;
+  imageUrl?: string;
+  status: string;
+  isSub: boolean;
+};
+
+function collectNakladnoyRows(items: ExcelOrderItem[]): NakladnoyRow[] {
+  const rows: NakladnoyRow[] = [];
+  let index = 0;
+
+  for (const item of items) {
+    index += 1;
+    const given = givenOf(item);
+    const unavailable =
+      item.fulfillmentStatus === OrderItemFulfillment.Unavailable || given === 0;
+    const billedQty = unavailable ? 0 : given;
+    rows.push({
+      index,
+      code: item.code?.trim() || '—',
+      sklad: skladOf(item),
+      name: item.name,
+      caseQty: caseQtyOf(item),
+      totalPieces: item.quantity,
+      unitPrice: item.unitPrice,
+      summa: billedQty * item.unitPrice,
+      imageUrl: item.image,
+      status: lineStatus(item),
+      isSub: false,
+    });
+
+    for (const sub of item.substitutes ?? []) {
+      index += 1;
+      rows.push({
+        index,
+        code: sub.code?.trim() || '—',
+        sklad: skladOf(sub),
+        name: sub.name,
+        caseQty: '—',
+        totalPieces: sub.quantity,
+        unitPrice: sub.unitPrice,
+        summa: sub.quantity * sub.unitPrice,
+        imageUrl: sub.image,
+        status: 'Almashtirilgan',
+        isSub: true,
+      });
+    }
+  }
+
+  return rows;
+}
+
 export async function buildOrderWorkbook(
   order: ExcelOrder,
   images: Map<string, { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif' }>,
@@ -153,39 +230,46 @@ export async function buildOrderWorkbook(
   wb.creator = 'Sami';
   wb.created = new Date();
 
-  const ws = wb.addWorksheet('Buyurtma', {
+  const ws = wb.addWorksheet('Nakladnoy', {
     pageSetup: {
       paperSize: 9,
-      orientation: 'portrait',
+      orientation: 'landscape',
       fitToPage: true,
       fitToWidth: 1,
       fitToHeight: 0,
-      margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
+      margins: { left: 0.35, right: 0.35, top: 0.45, bottom: 0.45, header: 0.2, footer: 0.2 },
     },
     views: [{ state: 'normal', showGridLines: false }],
   });
 
   ws.columns = [
-    { width: 14 },
-    { width: 40 },
+    { width: 11 },
+    { width: 5 },
     { width: 12 },
+    { width: 14 },
+    { width: 34 },
     { width: 16 },
+    { width: 10 },
+    { width: 12 },
+    { width: 14 },
   ];
 
   const currency = order.currency === 'USD' ? 'USD' : 'UZS';
   const shortId = String(order._id).slice(-8).toUpperCase();
   const fmt = moneyFmt(order.currency);
+  const items = order.items ?? [];
+  const nakladnoyRows = collectNakladnoyRows(items);
 
-  ws.mergeCells('A1:D1');
+  ws.mergeCells('A1:I1');
   ws.getCell('A1').value = 'SAMI';
   ws.getCell('A1').font = { name: 'Calibri', size: 22, bold: true, color: { argb: FILL.ink } };
   ws.getRow(1).height = 28;
 
-  ws.mergeCells('A2:D2');
-  ws.getCell('A2').value = `Buyurtma #${shortId}`;
+  ws.mergeCells('A2:I2');
+  ws.getCell('A2').value = `Nakladnoy — Buyurtma #${shortId}`;
   ws.getCell('A2').font = { name: 'Calibri', size: 14, bold: true };
 
-  ws.mergeCells('A3:D3');
+  ws.mergeCells('A3:I3');
   ws.getCell('A3').value =
     `${formatWhen(order.createdAt)}  ·  ${STATUS_LABEL[order.status] ?? order.status}  ·  ${currency}`;
   ws.getCell('A3').font = { name: 'Calibri', size: 10, color: { argb: 'FF6B7280' } };
@@ -205,56 +289,73 @@ export async function buildOrderWorkbook(
     const r = 5 + i;
     ws.getCell(`A${r}`).value = pair[0];
     ws.getCell(`A${r}`).font = { bold: true, size: 10, color: { argb: 'FF6B7280' } };
-    ws.mergeCells(`B${r}:D${r}`);
+    ws.mergeCells(`B${r}:I${r}`);
     ws.getCell(`B${r}`).value = pair[1];
     ws.getCell(`B${r}`).font = { size: 11 };
     ws.getRow(r).height = 18;
-    ['A', 'B', 'C', 'D'].forEach((col) => {
-      ws.getCell(`${col}${r}`).fill = {
+    for (let c = 1; c <= 9; c++) {
+      ws.getCell(r, c).fill = {
         type: 'pattern',
         pattern: 'solid',
         fgColor: { argb: FILL.card },
       };
-    });
+    }
   });
 
   const headerRow = 10;
-  const headers = ['Rasm', 'Mahsulot', 'Buyurtma', 'Hisob'];
+  const headers = [
+    'Rasm',
+    '№',
+    'Kod',
+    'Sklad',
+    'Produksiya',
+    'Kol-vo v keise',
+    'Kol_vo',
+    'Narx',
+    'Summa',
+  ];
   headers.forEach((h, i) => applyHeaderCell(ws.getCell(headerRow, i + 1), h));
   ws.getRow(headerRow).height = 22;
 
   let row = 11;
-  const items = order.items ?? [];
+  let totalBoxes = 0;
+  let totalLoosePieces = 0;
+  for (const item of items) {
+    totalBoxes += Math.max(0, Math.trunc(item.boxQuantity ?? 0));
+    totalLoosePieces += Math.max(0, Math.trunc(item.pieceQuantity ?? 0));
+  }
 
-  const writeProductRow = (
-    name: string,
-    ordered: number,
-    status: string,
-    billed: number,
-    imageUrl: string | undefined,
-    isSub: boolean,
-  ) => {
+  for (const line of nakladnoyRows) {
     const excelRow = ws.getRow(row);
     excelRow.height = 58;
     excelRow.alignment = { vertical: 'middle' };
-    excelRow.font = { name: 'Calibri', size: 11 };
+    excelRow.font = { name: 'Calibri', size: 10 };
 
-    excelRow.getCell(2).value = isSub ? `↳ ${name}` : name;
-    excelRow.getCell(2).alignment = { vertical: 'middle', wrapText: true };
-    excelRow.getCell(3).value = ordered;
-    excelRow.getCell(4).value = status === 'Qolmagan' ? 0 : billed;
-    excelRow.getCell(4).numFmt = fmt;
-    excelRow.getCell(4).font = { bold: true, name: 'Calibri' };
+    excelRow.getCell(2).value = line.index;
+    excelRow.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
+    excelRow.getCell(3).value = line.code;
+    excelRow.getCell(4).value = line.sklad;
+    excelRow.getCell(5).value = line.isSub ? `↳ ${line.name}` : line.name;
+    excelRow.getCell(5).alignment = { vertical: 'middle', wrapText: true };
+    excelRow.getCell(6).value = line.caseQty;
+    excelRow.getCell(6).alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    excelRow.getCell(7).value = line.totalPieces;
+    excelRow.getCell(7).alignment = { horizontal: 'center', vertical: 'middle' };
+    excelRow.getCell(8).value = line.unitPrice;
+    excelRow.getCell(8).numFmt = fmt;
+    excelRow.getCell(9).value = line.status === 'Qolmagan' ? 0 : line.summa;
+    excelRow.getCell(9).numFmt = fmt;
+    excelRow.getCell(9).font = { bold: true, name: 'Calibri' };
 
-    if (status === 'Qolmagan') {
-      excelRow.getCell(2).font = { color: { argb: 'FFB91C1C' }, bold: true, size: 11, name: 'Calibri' };
-      excelRow.getCell(2).fill = {
+    if (line.status === 'Qolmagan') {
+      excelRow.getCell(5).font = { color: { argb: 'FFB91C1C' }, bold: true, size: 10, name: 'Calibri' };
+      excelRow.getCell(5).fill = {
         type: 'pattern',
         pattern: 'solid',
         fgColor: { argb: FILL.danger },
       };
-    } else if (status === 'Almashtirilgan' || status.includes('/')) {
-      excelRow.getCell(2).fill = {
+    } else if (line.status === 'Almashtirilgan' || line.status.includes('/')) {
+      excelRow.getCell(5).fill = {
         type: 'pattern',
         pattern: 'solid',
         fgColor: { argb: FILL.warn },
@@ -262,10 +363,12 @@ export async function buildOrderWorkbook(
     }
 
     if (row % 2 === 0) {
-      for (let c = 1; c <= 4; c++) {
+      for (let c = 1; c <= 9; c++) {
         if (
-          c === 2 &&
-          (status === 'Qolmagan' || status === 'Almashtirilgan' || status.includes('/'))
+          c === 5 &&
+          (line.status === 'Qolmagan' ||
+            line.status === 'Almashtirilgan' ||
+            line.status.includes('/'))
         ) {
           continue;
         }
@@ -277,7 +380,7 @@ export async function buildOrderWorkbook(
       }
     }
 
-    const img = imageUrl ? images.get(imageUrl) : undefined;
+    const img = line.imageUrl ? images.get(line.imageUrl) : undefined;
     if (img) {
       const imageId = wb.addImage({
         buffer: img.buffer as unknown as ExcelJS.Buffer,
@@ -291,42 +394,18 @@ export async function buildOrderWorkbook(
     }
 
     row += 1;
-  };
-
-  for (const item of items) {
-    const given = givenOf(item);
-    const unavailable =
-      item.fulfillmentStatus === OrderItemFulfillment.Unavailable || given === 0;
-    const billed = unavailable ? 0 : given * item.unitPrice;
-    writeProductRow(
-      item.name,
-      item.quantity,
-      lineStatus(item),
-      billed,
-      item.image,
-      false,
-    );
-    for (const sub of item.substitutes ?? []) {
-      writeProductRow(
-        sub.name,
-        sub.quantity,
-        'Almashtirilgan',
-        sub.quantity * sub.unitPrice,
-        sub.image,
-        true,
-      );
-    }
   }
 
-  if (!items.length) {
-    ws.mergeCells(`A${row}:D${row}`);
+  if (!nakladnoyRows.length) {
+    ws.mergeCells(`A${row}:I${row}`);
     ws.getCell(`A${row}`).value = 'Mahsulotlar yoʻq';
     row += 1;
   }
 
   row += 1;
-  const totals: Array<[string, number, boolean]> = [
-    ['Mahsulotlar', order.subtotal, false],
+  const totals: Array<[string, string | number, boolean]> = [
+    ['Jami kor', `${totalBoxes.toFixed(2).replace(/\.?0+$/, '')} Kor`, false],
+    ['Jami dona (alohida)', totalLoosePieces, false],
     ['Yetkazib berish', order.shippingFee, false],
   ];
   if (order.originalTotal != null && order.originalTotal !== order.total) {
@@ -335,7 +414,7 @@ export async function buildOrderWorkbook(
   totals.push(['Yakuniy hisob', order.total, true]);
 
   for (const [label, value, strong] of totals) {
-    ws.mergeCells(`A${row}:C${row}`);
+    ws.mergeCells(`A${row}:H${row}`);
     ws.getCell(`A${row}`).value = label;
     ws.getCell(`A${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
     ws.getCell(`A${row}`).font = {
@@ -343,16 +422,18 @@ export async function buildOrderWorkbook(
       size: strong ? 12 : 10,
       color: { argb: strong ? 'FFFFFFFF' : 'FF6B7280' },
     };
-    ws.getCell(`D${row}`).value = value;
-    ws.getCell(`D${row}`).numFmt = fmt;
-    ws.getCell(`D${row}`).font = {
+    ws.getCell(`I${row}`).value = value;
+    if (typeof value === 'number') {
+      ws.getCell(`I${row}`).numFmt = fmt;
+    }
+    ws.getCell(`I${row}`).font = {
       bold: true,
       size: strong ? 12 : 11,
       color: { argb: strong ? 'FFFFFFFF' : FILL.ink },
     };
     if (strong) {
-      for (const col of ['A', 'B', 'C', 'D']) {
-        ws.getCell(`${col}${row}`).fill = {
+      for (let c = 1; c <= 9; c++) {
+        ws.getCell(row, c).fill = {
           type: 'pattern',
           pattern: 'solid',
           fgColor: { argb: FILL.total },
@@ -409,10 +490,11 @@ export async function buildOrdersListWorkbook(
     const products = (order.items ?? [])
       .map((i) => {
         const st = lineStatus(i);
+        const units = caseQtyOf(i);
         const subs = (i.substitutes ?? [])
           .map((s) => `→ ${s.name} ×${s.quantity}`)
           .join(' ');
-        return `${i.name} ×${i.quantity}${st ? ` (${st})` : ''}${subs ? ` ${subs}` : ''}`;
+        return `${i.name} ${units !== '—' ? `(${units})` : `×${i.quantity}`}${st ? ` [${st}]` : ''}${subs ? ` ${subs}` : ''}`;
       })
       .join('; ');
     r.values = [

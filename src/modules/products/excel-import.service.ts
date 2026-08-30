@@ -23,6 +23,7 @@ import {
   PRODUCT_IMAGE_PLACEHOLDER,
   isPlaceholderProductImage,
 } from './product-completeness';
+import { normalizePiecesPerBox } from '../../common/utils/product-units';
 
 export const EXCEL_IMPORT_MAX_BYTES = 150 * 1024 * 1024;
 export { isPlaceholderProductImage, PRODUCT_IMAGE_PLACEHOLDER };
@@ -64,6 +65,26 @@ type ParsedRow = {
   specs: Array<{ label: string; value: string }>;
   imageUrl: string;
 };
+
+function piecesPerBoxFromSpecs(
+  specs: Array<{ label: string; value: string }>,
+): number | undefined {
+  for (const spec of specs) {
+    const label = spec.label.toLowerCase();
+    if (
+      label.includes('кол-во в кейсе') ||
+      label.includes('количество в кейсе') ||
+      label.includes('qty in case') ||
+      label.includes('quantity in case') ||
+      (label.includes('кейсе') && (label.includes('кол') || label.includes('колич')))
+    ) {
+      const n = Number(String(spec.value).replace(/[^\d.,]/g, '').replace(',', '.'));
+      const ppb = normalizePiecesPerBox(n);
+      if (ppb) return ppb;
+    }
+  }
+  return undefined;
+}
 
 @Injectable()
 export class ExcelImportService {
@@ -554,6 +575,7 @@ export class ExcelImportService {
       code: string;
       slug: string;
       images: string[];
+      piecesPerBox?: number;
     }>
   > {
     if (!codes.length) return [];
@@ -567,12 +589,13 @@ export class ExcelImportService {
       code: string;
       slug: string;
       images: string[];
+      piecesPerBox?: number;
     };
 
     // 1) Aniq moslik (tez)
     const exact = (await this.productModel
       .find({ code: { $in: keys } })
-      .select('_id code slug images')
+      .select('_id code slug images piecesPerBox')
       .lean()
       .exec()) as Row[];
 
@@ -594,7 +617,7 @@ export class ExcelImportService {
         },
       },
       { $match: { codeKey: { $in: keys } } },
-      { $project: { _id: 1, code: 1, slug: 1, images: 1 } },
+      { $project: { _id: 1, code: 1, slug: 1, images: 1, piecesPerBox: 1 } },
     ]);
 
     const byId = new Map<string, Row>();
@@ -692,7 +715,7 @@ export class ExcelImportService {
 
     const existingByCode = new Map<
       string,
-      { id: string; slug: string; hasRealImage: boolean }
+      { id: string; slug: string; hasRealImage: boolean; piecesPerBox?: number }
     >();
     const codes = [...new Set(rows.map((r) => r.code))];
     const existing = await this.findExistingByCodes(codes);
@@ -707,6 +730,7 @@ export class ExcelImportService {
           id: String(p._id),
           slug: p.slug as string,
           hasRealImage,
+          piecesPerBox: normalizePiecesPerBox(p.piecesPerBox),
         });
       }
     }
@@ -743,6 +767,7 @@ export class ExcelImportService {
         }
 
         const prev = existingByCode.get(row.code);
+        const ppbFromSpec = piecesPerBoxFromSpecs(row.specs);
         if (prev) {
           // images va code UMUMAN yozilmaydi — rasm + eski kod saqlanadi.
           updateOps.push({
@@ -756,6 +781,9 @@ export class ExcelImportService {
                   wholesalePrice: row.wholesalePrice,
                   ...(row.stock != null ? { stock: row.stock } : {}),
                   ...(row.barcode ? { barcode: row.barcode } : {}),
+                  ...(ppbFromSpec && !prev.piecesPerBox
+                    ? { piecesPerBox: ppbFromSpec }
+                    : {}),
                   categoryId: new Types.ObjectId(categoryId),
                   specs: row.specs,
                   status: ProductStatus.Active,
@@ -785,6 +813,7 @@ export class ExcelImportService {
             wholesalePrice: row.wholesalePrice,
             stock: row.stock != null ? row.stock : 0,
             ...(row.barcode ? { barcode: row.barcode } : {}),
+            ...(ppbFromSpec ? { piecesPerBox: ppbFromSpec } : {}),
             categoryId: new Types.ObjectId(categoryId),
             images: [row.imageUrl],
             specs: row.specs,
@@ -796,6 +825,7 @@ export class ExcelImportService {
             id: String(id),
             slug,
             hasRealImage: !isPlaceholderProductImage(row.imageUrl),
+            piecesPerBox: ppbFromSpec,
           });
           if (!existingDoc) {
             touchedIds.push(String(id));
@@ -826,9 +856,11 @@ export class ExcelImportService {
           id: String(p._id),
           slug: p.slug,
           hasRealImage,
+          piecesPerBox: normalizePiecesPerBox(p.piecesPerBox),
         });
         const rowLike = rows.find((r) => r.code === key);
         if (!rowLike) continue;
+        const ppbFromSpec = piecesPerBoxFromSpecs(rowLike.specs);
         let categoryId = fallbackId;
         if (rowLike.categoryName.trim()) {
           categoryId = await ensureCategory(rowLike.categoryName);
@@ -844,6 +876,9 @@ export class ExcelImportService {
                 wholesalePrice: rowLike.wholesalePrice,
                 ...(rowLike.stock != null ? { stock: rowLike.stock } : {}),
                 ...(rowLike.barcode ? { barcode: rowLike.barcode } : {}),
+                ...(ppbFromSpec && !normalizePiecesPerBox(p.piecesPerBox)
+                  ? { piecesPerBox: ppbFromSpec }
+                  : {}),
                 categoryId: new Types.ObjectId(categoryId),
                 specs: rowLike.specs,
                 status: ProductStatus.Active,
@@ -899,6 +934,10 @@ export class ExcelImportService {
                   wholesalePrice: doc.wholesalePrice,
                   ...(doc.stock != null ? { stock: doc.stock } : {}),
                   ...(doc.barcode ? { barcode: doc.barcode } : {}),
+                  ...(doc.piecesPerBox &&
+                  !normalizePiecesPerBox(keep.piecesPerBox)
+                    ? { piecesPerBox: doc.piecesPerBox }
+                    : {}),
                   categoryId: doc.categoryId,
                   specs: doc.specs,
                   status: doc.status,

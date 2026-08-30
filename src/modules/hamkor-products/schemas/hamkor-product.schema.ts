@@ -44,6 +44,9 @@ export class HamkorProduct {
   @Prop({ required: true, min: 0, default: 0 })
   stock!: number;
 
+  @Prop({ min: 1 })
+  piecesPerBox?: number;
+
   @Prop({
     type: Types.ObjectId,
     ref: 'HamkorPartner',

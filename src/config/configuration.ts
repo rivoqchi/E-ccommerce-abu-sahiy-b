@@ -25,6 +25,44 @@ function isLocalHostUrl(url: string): boolean {
   }
 }
 
+/** Cloudflare R2 kalitlari to'liq va haqiqiy (placeholder emas) */
+function isR2Configured(): boolean {
+  const keys = [
+    'R2_ACCOUNT_ID',
+    'R2_ACCESS_KEY_ID',
+    'R2_SECRET_ACCESS_KEY',
+    'R2_BUCKET_NAME',
+    'R2_ENDPOINT',
+    'R2_PUBLIC_URL',
+  ] as const;
+  for (const key of keys) {
+    const value = optionalEnv(key);
+    if (!value) return false;
+    const lower = value.toLowerCase();
+    if (
+      lower.includes('placeholder') ||
+      lower.includes('<account_id>') ||
+      lower.includes('pub-xxxx') ||
+      lower.includes('local-dev')
+    ) {
+      return false;
+    }
+  }
+  try {
+    new URL(optionalEnv('R2_PUBLIC_URL'));
+    new URL(optionalEnv('R2_ENDPOINT'));
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+function resolveStorageDriver(): 'local' | 'r2' {
+  const requested = optionalEnv('STORAGE_DRIVER', 'r2').toLowerCase();
+  if (requested === 'local') return 'local';
+  return isR2Configured() ? 'r2' : 'local';
+}
+
 /** Render'da APP_URL localhost qolsa ham webhook to'g'ri URL ga yozilsin */
 function resolveAppUrl(): string {
   const explicit = stripSlash(requireEnv('APP_URL'));
@@ -135,17 +173,18 @@ export default () => {
     openWebUrl: resolveOpenWebUrl(frontendUrl, miniAppUrl),
   },
 
-  /** local = disk (uploads/), r2 = Cloudflare R2 */
-  storageDriver: optionalEnv('STORAGE_DRIVER', 'r2').toLowerCase(),
+  /** local = disk (uploads/), r2 = Cloudflare R2 (kalitlar to'liq bo'lsa) */
+  storageDriver: resolveStorageDriver(),
+  r2Configured: isR2Configured(),
 
   /** Cloudflare R2 (S3-compatible) media storage */
   r2: {
-    accountId: requireEnv('R2_ACCOUNT_ID'),
-    accessKeyId: requireEnv('R2_ACCESS_KEY_ID'),
-    secretAccessKey: requireEnv('R2_SECRET_ACCESS_KEY'),
-    bucket: requireEnv('R2_BUCKET_NAME'),
-    endpoint: requireEnv('R2_ENDPOINT').replace(/\/$/, ''),
-    publicUrl: requireEnv('R2_PUBLIC_URL').replace(/\/$/, ''),
+    accountId: optionalEnv('R2_ACCOUNT_ID'),
+    accessKeyId: optionalEnv('R2_ACCESS_KEY_ID'),
+    secretAccessKey: optionalEnv('R2_SECRET_ACCESS_KEY'),
+    bucket: optionalEnv('R2_BUCKET_NAME'),
+    endpoint: optionalEnv('R2_ENDPOINT').replace(/\/$/, ''),
+    publicUrl: optionalEnv('R2_PUBLIC_URL').replace(/\/$/, ''),
   },
   };
 };

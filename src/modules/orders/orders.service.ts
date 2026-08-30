@@ -21,6 +21,7 @@ import { RealtimeService } from '../realtime/realtime.service';
 import { PriceTier } from '../../common/enums/price-tier.enum';
 import { resolveUnitPrice, shippingFeeForTier, orderCurrency } from '../../common/utils/pricing';
 import { isStorefrontReadyProduct, firstProductImage } from '../products/product-completeness';
+import { resolveCheckoutQuantities } from '../../common/utils/product-units';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import {
   buildOrderWorkbook,
@@ -217,7 +218,11 @@ export class OrdersService {
       productId: Types.ObjectId;
       name: string;
       slug: string;
+      code?: string;
       quantity: number;
+      boxQuantity: number;
+      pieceQuantity: number;
+      piecesPerBox?: number;
       unitPrice: number;
       source: ProductSource;
       partnerId?: string;
@@ -265,11 +270,33 @@ export class OrdersService {
           ? partnerRef.name
           : undefined;
 
+      let resolved;
+      try {
+        resolved = resolveCheckoutQuantities({
+          quantity: line.quantity,
+          boxQuantity: line.boxQuantity,
+          pieceQuantity: line.pieceQuantity,
+          piecesPerBox: (product as { piecesPerBox?: number }).piecesPerBox,
+        });
+      } catch (err) {
+        throw new BadRequestException(
+          err instanceof Error
+            ? `${product.name}: ${err.message}`
+            : 'Noto‘g‘ri miqdor',
+        );
+      }
+
       lines.push({
         productId: product._id as Types.ObjectId,
         name: product.name,
         slug: product.slug,
-        quantity: line.quantity,
+        code: (product as { code?: string }).code,
+        quantity: resolved.quantity,
+        boxQuantity: resolved.boxQuantity,
+        pieceQuantity: resolved.pieceQuantity,
+        ...(resolved.piecesPerBox
+          ? { piecesPerBox: resolved.piecesPerBox }
+          : {}),
         unitPrice: resolveUnitPrice(product, priceTier, rate),
         source,
         partnerId,

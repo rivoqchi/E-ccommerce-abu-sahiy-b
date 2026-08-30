@@ -3,6 +3,7 @@ export const BTN_MY_ORDERS = 'Buyurtmalarim';
 export const BTN_SEND_CODE = 'Kod yuborish';
 export const BTN_OPEN_WEB = 'Open Web';
 export const BTN_MINI_APP = 'Mini App';
+export const BTN_XITOY = 'Xitoy';
 
 export const texts = {
   welcomeNeedPhone:
@@ -41,6 +42,16 @@ export const texts = {
   codeCooldown: 'Yangi kod uchun 10 daqiqa kuting.',
   codeFailed: 'Kod yuborib bo‘lmadi. Keyinroq qayta urinib ko‘ring.',
   openWebFailed: 'Open Web linkini yaratib bo‘lmadi. Qayta urinib ko‘ring.',
+  xitoyAdminOnly: 'Bu bo‘lim faqat adminlar uchun.',
+  xitoyStarted:
+    'Xitoy mahsulot qo‘shish boshlandi.\n\nRasm yuboring yoki /bekor bilan bekor qiling.',
+  xitoyCancelled: 'Qo‘shish bekor qilindi.',
+  xitoyInvalidNumber: 'Noto‘g‘ri raqam. Iltimos, musbat son kiriting.',
+  xitoyInvalidName: 'Nom bo‘sh bo‘lmasligi kerak.',
+  xitoyNeedPhoto: 'Avval rasm yuboring.',
+  xitoyPhotoFailed: 'Rasm saqlanmadi. Qayta urinib ko‘ring.',
+  xitoySuccess: (name: string) =>
+    `✅ «${name}» muvaffaqiyatli qo‘shildi!`,
 };
 
 export const statusLabels: Record<string, string> = {

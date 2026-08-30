@@ -48,6 +48,10 @@ export class Product {
   @Prop({ required: true, min: 0, default: 0 })
   stock!: number;
 
+  /** Karobkadagi dona soni (ixtiyoriy — eski mahsulotlar uchun). */
+  @Prop({ min: 1 })
+  piecesPerBox?: number;
+
   @Prop({ type: Types.ObjectId, ref: 'Category', required: true, index: true })
   categoryId!: Types.ObjectId;
 

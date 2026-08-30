@@ -1,4 +1,6 @@
-import { IsArray, IsString, Matches, ArrayMaxSize } from 'class-validator';
+import { IsArray, IsIn, IsOptional, IsString, Matches, ArrayMaxSize } from 'class-validator';
+
+const UPLOAD_FOLDERS = ['products', 'xitoy'] as const;
 
 export class UploadImagesDto {
   @IsArray()
@@ -9,4 +11,10 @@ export class UploadImagesDto {
     message: 'each item must be a JPEG, PNG or WebP data URL',
   })
   dataUrls!: string[];
+
+  /** R2/local papka: products (default) yoki xitoy */
+  @IsOptional()
+  @IsString()
+  @IsIn(UPLOAD_FOLDERS)
+  folder?: (typeof UPLOAD_FOLDERS)[number];
 }

@@ -2,6 +2,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -16,6 +17,10 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
 import { slugify } from '../../common/utils/slugify';
 import { newHighlightUntilFromNow } from '../../common/utils/product-new-highlight';
+import {
+  normalizePiecesPerBox,
+  stockAdjustTotalDelta,
+} from '../../common/utils/product-units';
 import { RedisService } from '../redis/redis.service';
 import { ProductStatus } from '../../common/enums/product-status.enum';
 import { CategoriesService } from '../categories/categories.service';
@@ -236,7 +241,7 @@ export class ProductsService {
     let product = await this.redis.getJson<Record<string, unknown>>(cacheKey);
 
     if (!product) {
-      const found = await this.productModel
+      let found = await this.productModel
         .findOne({
           slug: decoded,
           status: ProductStatus.Active,
@@ -247,6 +252,20 @@ export class ProductsService {
         .populate('brandId', 'name slug')
         .lean()
         .exec();
+
+      if (!found && Types.ObjectId.isValid(decoded)) {
+        found = await this.productModel
+          .findOne({
+            _id: new Types.ObjectId(decoded),
+            status: ProductStatus.Active,
+            isActive: true,
+            ...storefrontReadyMongoFilter(),
+          })
+          .populate('categoryId', 'name slug')
+          .populate('brandId', 'name slug')
+          .lean()
+          .exec();
+      }
 
       if (!found) {
         throw new NotFoundException('Product not found');
@@ -387,6 +406,7 @@ export class ProductsService {
 
     const updatePayload: Record<string, unknown> = { ...dto };
     delete updatePayload.highlightAsNew;
+    delete updatePayload.stockAdjust;
 
     if (dto.highlightAsNew === true) {
       updatePayload.newHighlightUntil = newHighlightUntilFromNow();
@@ -422,8 +442,41 @@ export class ProductsService {
       updatePayload.brandId = new Types.ObjectId(dto.brandId);
     }
 
+    const mongoUpdate: Record<string, unknown> = { $set: updatePayload };
+
+    if (dto.piecesPerBox !== undefined) {
+      const normalized = normalizePiecesPerBox(dto.piecesPerBox);
+      if (normalized) {
+        updatePayload.piecesPerBox = normalized;
+      } else {
+        delete updatePayload.piecesPerBox;
+        mongoUpdate.$unset = { piecesPerBox: '' };
+      }
+    }
+
+    if (dto.stockAdjust) {
+      delete updatePayload.stock;
+      const existing = await this.productModel.findById(id).lean().exec();
+      if (!existing) {
+        throw new NotFoundException('Product not found');
+      }
+      const ppb =
+        normalizePiecesPerBox(dto.piecesPerBox) ??
+        normalizePiecesPerBox(existing.piecesPerBox);
+      try {
+        const delta = stockAdjustTotalDelta(dto.stockAdjust, ppb);
+        if (delta !== 0) mongoUpdate.$inc = { stock: delta };
+      } catch (err) {
+        throw new BadRequestException(
+          err instanceof Error
+            ? err.message
+            : 'Omborga qo‘shishda xato. Karobka uchun avval «Karobkada nechta dona» kiriting.',
+        );
+      }
+    }
+
     const product = await this.productModel
-      .findByIdAndUpdate(id, { $set: updatePayload }, { new: true })
+      .findByIdAndUpdate(id, mongoUpdate, { new: true })
       .lean()
       .exec();
 

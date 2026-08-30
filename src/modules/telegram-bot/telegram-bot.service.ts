@@ -17,6 +17,8 @@ import { OrdersService } from '../orders/orders.service';
 import { AuthService } from '../auth/auth.service';
 import { RedisService } from '../redis/redis.service';
 import { ProductsService } from '../products/products.service';
+import { UploadsService } from '../uploads/uploads.service';
+import { XitoyProductsService } from '../xitoy-products/xitoy-products.service';
 import { UserDocument } from '../users/schemas/user.schema';
 import { Role } from '../../common/enums/role.enum';
 import { onOrderCreated } from '../orders/order-events';
@@ -31,9 +33,19 @@ import {
   BTN_OPEN_WEB,
   BTN_SEND_CODE,
   BTN_SHARE_PHONE,
+  BTN_XITOY,
   statusLabels,
   texts,
 } from './telegram-bot.texts';
+import {
+  nextXitoyStep,
+  parsePositiveNumber,
+  type XitoyDraftData,
+  type XitoyDraftStep,
+  xitoyDraftKey,
+  xitoyStepPrompts,
+  XITOY_DRAFT_TTL_SEC,
+} from './telegram-bot.xitoy-draft';
 
 const POLLING_LOCK_KEY = 'telegram-bot:polling-lock';
 const POLLING_LOCK_TTL_SEC = 45;
@@ -62,6 +74,8 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     private readonly authService: AuthService,
     private readonly redisService: RedisService,
     private readonly productsService: ProductsService,
+    private readonly uploadsService: UploadsService,
+    private readonly xitoyProductsService: XitoyProductsService,
   ) {}
 
   async onModuleInit() {
@@ -478,6 +492,9 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     bot.hears(BTN_SEND_CODE, (ctx) => this.onSendCode(ctx));
     bot.hears(BTN_OPEN_WEB, (ctx) => this.onOpenWebText(ctx));
     bot.hears(BTN_MINI_APP, (ctx) => this.onMiniAppText(ctx));
+    bot.hears(BTN_XITOY, (ctx) => this.onXitoyButton(ctx));
+    bot.command('bekor', (ctx) => this.onXitoyCancel(ctx));
+    bot.on('message:photo', (ctx) => this.onPhotoMessage(ctx));
     bot.callbackQuery('open_web', (ctx) => this.onOpenWebCallback(ctx));
     bot.callbackQuery('send_code', async (ctx) => {
       await ctx.answerCallbackQuery().catch(() => undefined);
@@ -502,6 +519,12 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
   private async onStart(ctx: Context) {
     const telegramId = ctx.from?.id;
     if (telegramId == null) return;
+
+    const payload = typeof ctx.match === 'string' ? ctx.match.trim() : '';
+    if (payload === 'xitoy_add') {
+      await this.startXitoyDraft(ctx);
+      return;
+    }
 
     const user = await this.usersService.findByTelegramId(String(telegramId));
     if (user?.phone) {
@@ -717,7 +740,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
         reply_markup: new InlineKeyboard().copyText('Copy Code', code),
       });
       await ctx.reply('Kodni /login sahifasiga kiriting.', {
-        reply_markup: this.mainReplyKeyboard(),
+        reply_markup: this.mainReplyKeyboard(user.role === Role.Admin),
       });
     } catch (err) {
       const status =
@@ -742,15 +765,27 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       text === BTN_MY_ORDERS ||
       text === BTN_SEND_CODE ||
       text === BTN_OPEN_WEB ||
-      text === BTN_MINI_APP
+      text === BTN_MINI_APP ||
+      text === BTN_XITOY
     ) {
       return;
+    }
+
+    const telegramId = ctx.from?.id;
+    if (telegramId != null) {
+      const draft = await this.getXitoyDraft(String(telegramId));
+      if (draft && draft.step !== 'image') {
+        const user = await this.requireAdmin(ctx);
+        if (!user) return;
+        await this.handleXitoyTextStep(ctx, String(telegramId), draft, text);
+        return;
+      }
     }
 
     const user = await this.requireApprovedUser(ctx);
     if (!user) return;
 
-    await this.replyWithMenu(ctx, texts.menuHint, false);
+    await this.replyWithMenu(ctx, texts.menuHint, false, user);
   }
 
   /** Pastki reply keyboard — Mini App doim web_app (Telegram ichida ochiladi) */
@@ -758,10 +793,18 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     ctx: Context,
     message: string,
     _installReplyKeyboard = true,
+    user?: UserDocument | null,
   ) {
+    let resolvedUser = user;
+    if (resolvedUser === undefined && ctx.from?.id) {
+      resolvedUser = await this.usersService.findByTelegramId(
+        String(ctx.from.id),
+      );
+    }
+    const isAdmin = resolvedUser?.role === Role.Admin;
     try {
       await ctx.reply(message, {
-        reply_markup: this.mainReplyKeyboard(),
+        reply_markup: this.mainReplyKeyboard(isAdmin),
       });
     } catch (err) {
       this.logger.warn(
@@ -791,7 +834,9 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     if (!user) return;
     await ctx.reply(
       'Mini App tugmasini qayta bosing — Telegram ichida ochiladi.',
-      { reply_markup: this.mainReplyKeyboard() },
+      {
+        reply_markup: this.mainReplyKeyboard(user.role === Role.Admin),
+      },
     );
   }
 
@@ -848,15 +893,17 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private mainReplyKeyboard() {
-    return new Keyboard()
+  private mainReplyKeyboard(isAdmin = false) {
+    const kb = new Keyboard()
       .text(BTN_MY_ORDERS)
       .text(BTN_SEND_CODE)
       .row()
       .text(BTN_OPEN_WEB)
-      .webApp(BTN_MINI_APP, this.miniAppUrl || DEFAULT_MINI_APP_URL)
-      .resized()
-      .persistent();
+      .webApp(BTN_MINI_APP, this.miniAppUrl || DEFAULT_MINI_APP_URL);
+    if (isAdmin) {
+      kb.row().text(BTN_XITOY);
+    }
+    return kb.resized().persistent();
   }
 
   private async requireApprovedUser(
@@ -914,6 +961,8 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     await this.replyWithMenu(
       ctx,
       opts?.justRegistered ? texts.profileApproved : texts.welcomeReady,
+      true,
+      user,
     );
     if (telegramId) {
       await this.setChatMiniAppButton(Number(telegramId), true);
@@ -1047,7 +1096,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
     try {
       if (status === ApprovalStatus.Approved) {
         await this.bot.api.sendMessage(chatId, texts.profileApproved, {
-          reply_markup: this.mainReplyKeyboard(),
+          reply_markup: this.mainReplyKeyboard(user.role === Role.Admin),
         });
         await this.setChatMiniAppButton(chatId, true);
         return;
@@ -1329,6 +1378,228 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
       telegramId: user.telegramId ?? null,
       role: user.role,
     };
+  }
+
+  private async requireAdmin(ctx: Context): Promise<UserDocument | null> {
+    const user = await this.requireApprovedUser(ctx);
+    if (!user) return null;
+    if (user.role !== Role.Admin) {
+      await ctx.reply(texts.xitoyAdminOnly);
+      return null;
+    }
+    return user;
+  }
+
+  private async getXitoyDraft(
+    telegramId: string,
+  ): Promise<XitoyDraftData | null> {
+    const raw = await this.redisService.get(xitoyDraftKey(telegramId));
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as XitoyDraftData;
+    } catch {
+      return null;
+    }
+  }
+
+  private async saveXitoyDraft(
+    telegramId: string,
+    draft: XitoyDraftData,
+  ): Promise<void> {
+    await this.redisService.set(
+      xitoyDraftKey(telegramId),
+      JSON.stringify(draft),
+      XITOY_DRAFT_TTL_SEC,
+    );
+  }
+
+  private async clearXitoyDraft(telegramId: string): Promise<void> {
+    await this.redisService.del(xitoyDraftKey(telegramId));
+  }
+
+  private async startXitoyDraft(ctx: Context) {
+    const user = await this.requireAdmin(ctx);
+    if (!user) return;
+
+    const telegramId = String(ctx.from!.id);
+    const draft: XitoyDraftData = { step: 'image' };
+    await this.saveXitoyDraft(telegramId, draft);
+
+    await ctx.reply(texts.xitoyStarted, {
+      reply_markup: this.mainReplyKeyboard(true),
+    });
+    await ctx.reply(xitoyStepPrompts.image);
+  }
+
+  private async onXitoyButton(ctx: Context) {
+    await this.startXitoyDraft(ctx);
+  }
+
+  private async onXitoyCancel(ctx: Context) {
+    const telegramId = ctx.from?.id;
+    if (telegramId == null) return;
+
+    const draft = await this.getXitoyDraft(String(telegramId));
+    if (!draft) return;
+
+    const user = await this.requireAdmin(ctx);
+    if (!user) return;
+
+    await this.clearXitoyDraft(String(telegramId));
+    await ctx.reply(texts.xitoyCancelled, {
+      reply_markup: this.mainReplyKeyboard(true),
+    });
+  }
+
+  private async onPhotoMessage(ctx: Context) {
+    const telegramId = ctx.from?.id;
+    if (telegramId == null) return;
+
+    const draft = await this.getXitoyDraft(String(telegramId));
+    if (!draft || draft.step !== 'image') return;
+
+    const user = await this.requireAdmin(ctx);
+    if (!user || !this.bot) return;
+
+    const photos = ctx.message?.photo;
+    if (!photos?.length) return;
+
+    const largest = photos[photos.length - 1];
+    try {
+      const file = await this.bot.api.getFile(largest.file_id);
+      if (!file.file_path) {
+        await ctx.reply(texts.xitoyPhotoFailed);
+        return;
+      }
+
+      const token = this.configService.get<string>('telegram.botToken')?.trim();
+      if (!token) {
+        await ctx.reply(texts.xitoyPhotoFailed);
+        return;
+      }
+
+      const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+      const response = await fetch(fileUrl);
+      if (!response.ok) {
+        await ctx.reply(texts.xitoyPhotoFailed);
+        return;
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const ext = file.file_path.toLowerCase().endsWith('.png')
+        ? 'png'
+        : file.file_path.toLowerCase().endsWith('.webp')
+          ? 'webp'
+          : 'jpg';
+      const imageUrl = await this.uploadsService.saveImageBuffer(
+        buffer,
+        ext,
+        'xitoy',
+      );
+
+      const nextStep = nextXitoyStep('image');
+      if (!nextStep) return;
+
+      const updated: XitoyDraftData = {
+        ...draft,
+        imageUrl,
+        step: nextStep,
+      };
+      await this.saveXitoyDraft(String(telegramId), updated);
+      await ctx.reply(xitoyStepPrompts[nextStep], {
+        reply_markup: this.mainReplyKeyboard(true),
+      });
+    } catch (err) {
+      this.logger.warn(
+        `xitoy photo upload: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      await ctx.reply(texts.xitoyPhotoFailed);
+    }
+  }
+
+  private async handleXitoyTextStep(
+    ctx: Context,
+    telegramId: string,
+    draft: XitoyDraftData,
+    text: string,
+  ) {
+    const step = draft.step;
+    let updated: XitoyDraftData = { ...draft };
+
+    if (step === 'name') {
+      if (!text.trim()) {
+        await ctx.reply(texts.xitoyInvalidName);
+        return;
+      }
+      updated.name = text.trim();
+    } else {
+      const value = parsePositiveNumber(text);
+      if (value == null) {
+        await ctx.reply(texts.xitoyInvalidNumber);
+        return;
+      }
+      updated = { ...updated, [step]: value } as XitoyDraftData;
+    }
+
+    if (step === 'customsFee') {
+      await this.finishXitoyDraft(ctx, telegramId, updated);
+      return;
+    }
+
+    const nextStep = nextXitoyStep(step);
+    if (!nextStep) return;
+
+    updated.step = nextStep;
+    await this.saveXitoyDraft(telegramId, updated);
+    await ctx.reply(xitoyStepPrompts[nextStep], {
+      reply_markup: this.mainReplyKeyboard(true),
+    });
+  }
+
+  private async finishXitoyDraft(
+    ctx: Context,
+    telegramId: string,
+    draft: XitoyDraftData,
+  ) {
+    if (
+      !draft.imageUrl ||
+      !draft.name ||
+      draft.chinaPriceYuan == null ||
+      draft.cubicM3 == null ||
+      draft.weightKg == null ||
+      draft.wholesalePrice == null ||
+      draft.yuanRate == null ||
+      draft.customsFee == null
+    ) {
+      await ctx.reply(texts.xitoyNeedPhoto);
+      return;
+    }
+
+    try {
+      await this.xitoyProductsService.create({
+        imageUrl: draft.imageUrl,
+        name: draft.name,
+        chinaPriceYuan: draft.chinaPriceYuan,
+        cubicM3: draft.cubicM3,
+        weightKg: draft.weightKg,
+        wholesalePrice: draft.wholesalePrice,
+        yuanRate: draft.yuanRate,
+        customsFee: draft.customsFee,
+      });
+      await this.clearXitoyDraft(telegramId);
+      await ctx.reply(texts.xitoySuccess(draft.name), {
+        reply_markup: this.mainReplyKeyboard(true),
+      });
+    } catch (err) {
+      this.logger.error(
+        `finishXitoyDraft failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      await ctx.reply(texts.registerFailed);
+    }
   }
 }
 

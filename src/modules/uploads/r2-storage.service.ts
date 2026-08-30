@@ -28,14 +28,26 @@ export class R2StorageService implements OnModuleInit {
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit() {
-    this.useLocal = this.configService.get<string>('storageDriver') === 'local';
+    const driver = this.configService.get<'local' | 'r2'>('storageDriver');
+    const r2Configured = this.configService.get<boolean>('r2Configured');
+    const wantsR2 =
+      (process.env.STORAGE_DRIVER ?? 'r2').trim().toLowerCase() === 'r2';
+
+    this.useLocal = driver !== 'r2';
 
     if (this.useLocal) {
       this.localBaseDir = join(process.cwd(), 'uploads');
       this.publicBaseUrl = `${this.configService
         .getOrThrow<string>('appUrl')
         .replace(/\/$/, '')}/uploads`;
-      this.logger.log(`Local file storage enabled (${this.localBaseDir})`);
+      if (wantsR2 && !r2Configured) {
+        this.logger.warn(
+          'STORAGE_DRIVER=r2, lekin R2 kalitlari to\'liq emas (placeholder?). ' +
+            'Vaqtincha local uploads/ ishlatiladi. Cloudflare uchun .env dagi R2_* ni to\'ldiring.',
+        );
+      } else {
+        this.logger.log(`Local file storage enabled (${this.localBaseDir})`);
+      }
       return;
     }
 

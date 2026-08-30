@@ -25,4 +25,8 @@ export class RealtimeService {
   emitAdminAlert(payload: unknown) {
     this.server?.to('admin').emit('admin.alert', payload);
   }
+
+  emitXitoyProductChanged(payload: unknown) {
+    this.server?.to('admin').emit('xitoy.product.changed', payload);
+  }
 }

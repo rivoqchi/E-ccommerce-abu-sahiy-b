@@ -28,7 +28,10 @@ export class UploadsController {
 
   @Post('images')
   async uploadImages(@Body() dto: UploadImagesDto) {
-    const urls = await this.uploadsService.saveImages(dto.dataUrls);
+    const urls = await this.uploadsService.saveImages(
+      dto.dataUrls,
+      dto.folder ?? 'products',
+    );
     return { urls };
   }
 

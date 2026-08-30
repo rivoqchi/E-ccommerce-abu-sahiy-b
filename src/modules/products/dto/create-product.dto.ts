@@ -67,6 +67,12 @@ export class CreateProductDto {
   @Min(0)
   stock!: number;
 
+  /** Karobkada nechta dona. */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  piecesPerBox?: number;
+
   @IsMongoId()
   categoryId!: string;
 

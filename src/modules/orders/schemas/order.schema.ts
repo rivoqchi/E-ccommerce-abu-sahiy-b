@@ -50,9 +50,21 @@ export class OrderItem {
   @Prop({ required: true })
   slug!: string;
 
-  /** Mijoz buyurtma qilgan son. */
+  /** Mijoz buyurtma qilgan son (jami dona). */
   @Prop({ required: true, min: 1 })
   quantity!: number;
+
+  @Prop({ min: 0, default: 0 })
+  boxQuantity?: number;
+
+  @Prop({ min: 0, default: 0 })
+  pieceQuantity?: number;
+
+  @Prop({ min: 1 })
+  piecesPerBox?: number;
+
+  @Prop()
+  code?: string;
 
   @Prop({ required: true, min: 0 })
   unitPrice!: number;

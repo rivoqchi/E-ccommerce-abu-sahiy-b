@@ -41,8 +41,12 @@ function imageContentType(ext: string): string {
 export class UploadsService {
   constructor(private readonly r2: R2StorageService) {}
 
-  async saveImages(dataUrls: string[]): Promise<string[]> {
+  async saveImages(
+    dataUrls: string[],
+    folder: 'products' | 'xitoy' = 'products',
+  ): Promise<string[]> {
     const urls: string[] = [];
+    const prefix = folder.replace(/[^a-z0-9_-]/gi, '') || 'products';
 
     for (const dataUrl of dataUrls) {
       const match = /^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/i.exec(
@@ -63,7 +67,7 @@ export class UploadsService {
 
       const filename = `${randomUUID()}.${ext}`;
       const url = await this.r2.putObject({
-        key: `products/${filename}`,
+        key: `${prefix}/${filename}`,
         body: buffer,
         contentType: imageContentType(ext),
       });
@@ -71,6 +75,25 @@ export class UploadsService {
     }
 
     return urls;
+  }
+
+  /** Telegram yoki boshqa manbadan kelgan rasm bufferni saqlash */
+  async saveImageBuffer(
+    buffer: Buffer,
+    ext: 'jpg' | 'png' | 'webp' = 'jpg',
+    folder: 'products' | 'xitoy' = 'products',
+  ): Promise<string> {
+    if (buffer.byteLength > IMAGE_MAX_BYTES) {
+      throw new BadRequestException('Image too large (max ~8MB)');
+    }
+
+    const prefix = folder.replace(/[^a-z0-9_-]/gi, '') || 'products';
+    const filename = `${randomUUID()}.${ext}`;
+    return this.r2.putObject({
+      key: `${prefix}/${filename}`,
+      body: buffer,
+      contentType: imageContentType(ext),
+    });
   }
 
   /**
